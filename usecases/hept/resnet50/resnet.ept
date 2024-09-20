@@ -1,0 +1,1848 @@
+open Mymath
+
+(*======================================================*)
+(* Very simple matmul, in a very particular case        *)
+(*------------------------------------------------------*)
+
+fun matmul_aux<<out_dim : int >>
+     (v1:float;m2:float^out_dim;
+      acc:float^out_dim)
+     returns
+     (out:float^out_dim)
+var
+  factor : float^out_dim ;
+let
+  factor = map<<out_dim>> ( *. ) <(v1)> (m2) ;
+  out = map<<out_dim>> ( +. ) (factor,acc) ;
+tel
+
+fun matmul
+     << in_dim,out_dim:int >>
+     (m1:float^in_dim;m2:float^out_dim^in_dim)
+     returns
+     (out:float^out_dim)
+let
+  out = fold<<in_dim>> (matmul_aux<<out_dim>>) (m1,m2,0.0^out_dim) ;
+tel
+
+(*======================================================*)
+(* Mean on 2D data. Assumes that:                       *)
+(* - Input data is of the form WxHxCxf32                *)
+(* - Mean is taken on both dimensions W and H           *)
+(*------------------------------------------------------*)
+
+fun mean2d_aux2
+      << in_c_dim:int >>
+      (data:float^in_c_dim;
+       acc:float^in_c_dim)
+      returns
+      (out:float^in_c_dim)
+let
+  out = map<<in_c_dim>> (+.) (data,acc) ;
+tel
+
+fun mean2d_aux1
+      << in_c_dim, in_h_dim:int >>
+      (data:float^in_c_dim^in_h_dim;
+       acc:float^in_c_dim)
+      returns
+      (out:float^in_c_dim)
+let
+  out = fold<<in_h_dim>> (mean2d_aux2<<in_c_dim>>) (data,acc) ;
+tel
+
+fun mean2d
+      << in_c_dim, in_h_dim, in_w_dim: int >>
+      (data:float^in_c_dim^in_h_dim^in_w_dim)
+      returns
+      (out:float^in_c_dim)
+var
+  divisor : float ;
+  sum : float^in_c_dim ;
+let
+  sum = fold<<in_w_dim>> (mean2d_aux1<<in_c_dim, in_h_dim>>) (data,0.0^in_c_dim) ;
+  divisor = int2float(in_h_dim*in_w_dim) ;
+  out = map<<in_c_dim>> ( *. ) <(1.0 /. divisor)> (sum) ;
+tel
+
+
+
+(*======================================================*)
+(* Pad with zeroes on 2D data. Assumes that:            *)
+(* - Thers is no padding on the batch or channel        *)
+(*   dimensions (only on H and W).                      *)
+(*------------------------------------------------------*)
+fun pad2d_aux2
+      << in_c_dim, in_h_dim, in_w_dim: int >>
+      (data:float^in_c_dim^in_h_dim^in_w_dim;
+       pad_w_before,pad_w_after:int;
+       pad_h_before,pad_h_after:int;
+       out_w,out_h:int)
+      returns
+      (out:float^in_c_dim)
+let
+  out =
+    if (out_h < pad_h_before) or
+       (out_h >= in_h_dim+pad_h_before)
+    then
+      0.0^in_c_dim
+    else
+      data [> out_w - pad_w_before <]
+           [> out_h - pad_h_before <] ;
+tel
+
+fun pad2d_aux1
+      << in_c_dim, in_h_dim, in_w_dim: int;
+         pad_h_before,pad_h_after:int>>
+      (data:float^in_c_dim^in_h_dim^in_w_dim;
+       pad_w_before,pad_w_after:int;
+       out_w:int)
+      returns
+      (out:float^in_c_dim
+                ^(in_h_dim+pad_h_before+pad_h_after)
+      )
+let
+  out = 
+    if (out_w < pad_w_before) or
+       (out_w >= in_w_dim+pad_w_before)
+    then
+      0.0^in_c_dim^(in_h_dim+pad_h_before+pad_h_after)
+    else
+      mapi<< (in_h_dim+pad_h_before+pad_h_after) >>
+           (pad2d_aux2<<in_c_dim,in_h_dim,in_w_dim>>)
+           <(data,pad_w_before,pad_w_after,pad_h_before,pad_h_after,out_w)> () ;
+tel
+
+fun pad2d
+      << in_c_dim, in_h_dim, in_w_dim: int;
+         pad_h_before,pad_h_after,pad_w_before,pad_w_after:int>>
+      (data:float^in_c_dim^in_h_dim^in_w_dim)
+      returns
+      (out:float^in_c_dim
+                ^(in_h_dim+pad_h_before+pad_h_after)
+		^(in_w_dim+pad_w_before+pad_w_after)
+      )
+let
+  out = mapi<< (in_w_dim+pad_w_before+pad_w_after) >>
+           (pad2d_aux1<<in_c_dim,in_h_dim,in_w_dim,
+                       pad_h_before,pad_h_after>>)
+           <(data,pad_w_before,pad_w_after)> () ;
+tel
+
+
+
+(*======================================================*)
+(* Softmax on 1D data                                   *)
+(*------------------------------------------------------*)
+fun max(a,b:float) returns (o:float)
+let
+  o = if a >=. b then a else b ;
+tel
+fun max_vector<<size:int>>(data:float^size) returns (o:float)
+let
+  o = fold<<size>> max (data,data[0]) ;
+tel
+fun softmax
+  <<size:int>>
+  (data:float^size) returns (out:float^size)
+var
+  v2,v6 : float ;
+  v4,v5 : float^size ;
+let
+  v2 = max_vector<<size>>(data) ;
+  v4 = map<<size>> ( +. ) <(-.v2)> (data) ;
+  v5 = map<<size>> exp (v4) ;
+  v6 = fold<<size>> ( +. ) (v5,0.0) ;
+  out = map<<size>> ( *. ) <(1.0 /. v6)> (v5) ;
+tel
+
+(*======================================================*)
+(* Add for 2D data                                      *)
+(*------------------------------------------------------*)
+fun bias_add_aux2
+  << in_c_dim: int >>
+  (bias,data: float^in_c_dim)
+  returns
+  (out: float^in_c_dim)
+let
+  out = map<<in_c_dim>> (+.) (bias,data) ;
+tel
+fun bias_add_aux1
+  << in_c_dim, in_h_dim: int >>
+  (bias:float^in_c_dim;
+   data:float^in_c_dim^in_h_dim)
+  returns
+  (out: float^in_c_dim^in_h_dim)
+let
+  out = map<<in_h_dim>> (bias_add_aux2<<in_c_dim>>) <(bias)> (data) ;
+tel
+fun bias_add
+  << in_c_dim, in_h_dim, in_w_dim: int >>
+  (data:float^in_c_dim^in_h_dim^in_w_dim;
+   bias:float^in_c_dim)
+  returns
+  (out: float^in_c_dim^in_h_dim^in_w_dim)
+let
+  out = map<<in_w_dim>> (bias_add_aux1<<in_c_dim,in_h_dim>>) <(bias)> (data) ;
+tel
+
+
+
+(*======================================================*)
+(* Add for 2D data                                      *)
+(*------------------------------------------------------*)
+fun add_chans
+  << in_c_dim: int >>
+  (i1,i2: float^in_c_dim)
+  returns
+  (out: float^in_c_dim)
+let
+  out = map<<in_c_dim>> (+.) (i1,i2) ;
+tel
+fun add1d
+  << in_c_dim, in_h_dim: int >>
+  (i1,i2: float^in_c_dim^in_h_dim)
+  returns
+  (out: float^in_c_dim^in_h_dim)
+let
+  out = map<<in_h_dim>> (add_chans<<in_c_dim>>) (i1,i2) ;
+tel
+fun add2d
+  << in_c_dim, in_h_dim, in_w_dim: int >>
+  (i1,i2: float^in_c_dim^in_h_dim^in_w_dim)
+  returns
+  (out: float^in_c_dim^in_h_dim^in_w_dim)
+let
+  out = map<<in_w_dim>> (add1d<<in_c_dim,in_h_dim>>) (i1,i2) ;
+tel
+
+(*======================================================*)
+(* FusedBatchNorm for data in NHWC format               *)
+(* I will assume (as everywhere in RESNET) that:        *)
+(* - epsilon = 1.001000e-05                             *)
+(* - exponential_avg_factor = 1.000000e+00              *)
+(*------------------------------------------------------*)
+const epsilon : float = 1.001000e-05
+
+fun fused_batch_norm_nhwc_aux2
+  << in_c_dim: int >>
+   (v5:float^in_c_dim;
+    v6:float^in_c_dim;
+    v3:float^in_c_dim;
+    v4:float^in_c_dim;
+    data:float^in_c_dim;)
+   returns
+   (out:float^in_c_dim)
+var
+  v7,v8,v9 : float^in_c_dim;
+let
+  v7 = map<<in_c_dim>> ( -. ) (data,v5) ;
+  v8 = map<<in_c_dim>> ( *. ) (v7,v3) ;
+  v9 = map<<in_c_dim>> ( /. ) (v8,v6) ;
+  out= map<<in_c_dim>> ( +. ) (v9,v4) ;
+tel
+fun fused_batch_norm_nhwc_aux1
+  << in_c_dim, in_h_dim: int >>
+   (a:float^in_c_dim;
+    v2:float^in_c_dim;
+    c:float^in_c_dim;
+    d:float^in_c_dim;
+    data:float^in_c_dim^in_h_dim;)
+   returns
+   (out:float^in_c_dim^in_h_dim)
+let
+  out = map<<in_h_dim>> (fused_batch_norm_nhwc_aux2<<in_c_dim>>) <(a,v2,c,d)> (data) ;
+tel
+fun fused_batch_norm_nhwc
+  << in_c_dim, in_h_dim, in_w_dim: int >>
+   (data:float^in_c_dim^in_h_dim^in_w_dim;
+    a:float^in_c_dim;
+    b:float^in_c_dim;
+    c:float^in_c_dim;
+    d:float^in_c_dim;)
+   returns
+   (out:float^in_c_dim^in_h_dim^in_w_dim)
+var
+  v0,v1,v2 : float^in_c_dim;
+let
+  v0 = epsilon ^ in_c_dim ;
+  v1 = map<<in_c_dim>> (+.) (b,v0) ;
+  v2 = map<<in_c_dim>> sqrt (v1) ;
+  out = map<<in_w_dim>> (fused_batch_norm_nhwc_aux1<<in_c_dim, in_h_dim>>) <(a,v2,c,d)> (data) ;
+tel
+
+
+
+(*======================================================*)
+(* Relu for 2D data                                     *)
+(*------------------------------------------------------*)
+fun relu_chans
+  << in_c_dim: int >>
+  (data: float^in_c_dim)
+  returns
+  (out: float^in_c_dim)
+let
+  out = map<<in_c_dim>> max <(0.0)> (data) ;
+tel
+fun relu1d
+  << in_c_dim, in_h_dim: int >>
+  (data: float^in_c_dim^in_h_dim)
+  returns
+  (out: float^in_c_dim^in_h_dim)
+let
+  out = map<<in_h_dim>> (relu_chans<<in_c_dim>>) (data) ;
+tel
+fun relu2d
+  << in_c_dim, in_h_dim, in_w_dim: int >>
+  (data: float^in_c_dim^in_h_dim^in_w_dim)
+  returns
+  (out: float^in_c_dim^in_h_dim^in_w_dim)
+let
+  out = map<<in_w_dim>> (relu1d<<in_c_dim,in_h_dim>>) (data) ;
+tel
+
+
+(*======================================================*)
+(* 2D Convolutions                                      *)
+(*------------------------------------------------------*)
+(* We assume:                                           *)
+(* - Batch size is always 1, and thus not represented.  *)
+(* - For SAME method convolutions we fully implemented  *)
+(*   only the case where strides are 1 on both height   *)
+(*   and width, and output height and width are the     *)
+(*   same as those of the input.                        *)
+(* - Each kernel dimension is larger than the           *)
+(*   corresponding stride. This means that, for VALID   *)
+(*   method convolutions, the output size on a          *)
+(*   dimension X is given by the formula:               *)
+(*    out_X = ((in_X-(kern_X-1)+(stride_X-1))/stride_X) *)
+(*   WHY: to allow the computation of a convolution, I  *)
+(*        need kern_X-1 extra values afterwards. But    *)
+(*        once I remove them, I need to re-add          *)
+(*        (stride_X-1) so that integer division gives   *)
+(*        the correct result.                           *)
+(* - Stride is only defined for the 2 data dimensions.  *)
+(*   It is one by default for batch and for channels.   *)
+(* - The dimensions are in the reverse order, when      *)
+(*   compared with MLIR memref/tensor definitions. This *)
+(*   ensures that batch is the outermost dimension in   *)
+(*   the machine representation, and data are grouped   *)
+(*   closer on the inner dimensions.                    *)
+(*------------------------------------------------------*)
+(* NOTES:                                               *)
+(* - Heptagon does not accept array elements in array   *)
+(*   dimension definitions. I cannot therefore have     *)
+(*   a static argument kern:int[2] and then use kern[0] *)
+(*   and kern[1] in the definition of the input and     *)
+(*   output array types.                                *)
+(* - For conv2d_valid, I could provide, instead of the  *)
+(*   kernel size, the size of the output. It would be   *)
+(*   more natural. However, for conv2d_size, this is    *)
+(*   not possible, so I keep kernel size for unity.     *)
+(*------------------------------------------------------*)
+
+(*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX*)
+(*======================================================*)
+(* CASE 1: VALID method                                 *)
+(*------------------------------------------------------*)
+
+
+(*------------------------------------------------------*)
+(* Get one input data value - VALID method              *)
+(* It produces the data for all channels at a time      *)
+(*------------------------------------------------------*)
+fun conv2d_valid_get_cell
+  (* Input data channels, height and width must be
+   * static inputs to allow output dimensioning *)
+  << in_c_dim, in_h_dim, in_w_dim: int >>
+  (
+   stride_h, stride_w:int; (* Strides on input height and width *)
+   data: float^in_c_dim^in_h_dim^in_w_dim ;
+   chan: int;           (* The channel *)
+   out_h,out_w: int;    (* The position in the output *)
+   kern_h, kern_w: int; (* The position in the kernel *)
+   )
+returns (res: float)
+let
+  res = data
+    [> stride_w * out_w + kern_w <]
+    [> stride_h * out_h + kern_h <]
+    [> chan <] ;
+tel
+
+(*------------------------------------------------------*)
+(*------------------------------------------------------*)
+fun conv2d_valid_cell
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (stride_h, stride_w:int; (* Strides on input height and width *)
+   data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   out_h,out_w: int;    (* The position in the output *)
+   kern_h, kern_w: int; (* The position in the kernel *)
+   out_c: int;          (* The output channel *)
+   (* The following two must be in this last positions to
+    * allow accumulation in a fold operation *)
+   in_c : int ;         (* The input channel *)
+   acc: float           (* Accumulator - this will be used in a reduce op *)
+   )
+returns (res: float)
+var
+  data_cell, kern_cell: float;
+let
+  data_cell = conv2d_valid_get_cell<<in_c_dim,in_h_dim,in_w_dim>>
+                                   (stride_h, stride_w,
+	   		            data,in_c,out_h,out_w,kern_h,kern_w) ;
+  kern_cell = kern [> kern_w <] [> kern_h <] [> in_c <] [> out_c <];
+  res = (data_cell *. kern_cell) +. acc;
+tel
+
+(*------------------------------------------------------*)
+(*------------------------------------------------------*)
+fun conv2d_valid_sum_over_in_channels
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (stride_h, stride_w:int; (* Strides on input height and width *)
+   data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   out_h,out_w: int;    (* The position in the output *)
+   out_c: int;          (* The output channel *)
+   kern_w: int;
+   (* The following two must be in this last positions to
+    * allow accumulation in a fold operation *)
+   kern_h : int ;
+   acc: float)
+returns (res: float)
+let
+  res = foldi << in_c_dim >>
+           (conv2d_valid_cell << in_c_dim,in_h_dim,in_w_dim,
+                                 kern_h_dim, kern_w_dim,
+                                 out_c_dim >>)
+           <(stride_h, stride_w,
+	     data, kern,
+             out_h, out_w, kern_h, kern_w, out_c)> (acc) ; 
+tel
+
+(*------------------------------------------------------*)
+(*------------------------------------------------------*)
+fun conv2d_valid_sum_over_kern_h
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (stride_h, stride_w:int; (* Strides on input height and width *)
+   data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   out_h,out_w: int;    (* The position in the output *)
+   out_c: int;          (* The output channel *)
+   kern_w: int;
+   acc: float)
+returns (res: float)
+let
+
+  res = foldi << kern_h_dim >>
+    (conv2d_valid_sum_over_in_channels << in_c_dim,in_h_dim,in_w_dim,
+                                          kern_h_dim, kern_w_dim,
+                                          out_c_dim >>)
+    <(stride_h, stride_w,
+      data,kern,
+      out_h,out_w,out_c,kern_w)> (acc) ;
+    
+tel
+
+(*------------------------------------------------------*)
+(*------------------------------------------------------*)
+fun conv2d_valid_sum_over_kern_w
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (stride_h, stride_w:int; (* Strides on input height and width *)
+   data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   out_h,out_w: int;    (* The position in the output *)
+   out_c: int;          (* The output channel *)
+  )
+returns (res: float)
+let
+
+  res = foldi << kern_w_dim >>
+    (conv2d_valid_sum_over_kern_h << in_c_dim,in_h_dim,in_w_dim,
+                                     kern_h_dim, kern_w_dim,
+                                     out_c_dim >>)
+    <(stride_h, stride_w,
+      data,kern,
+      out_h,out_w,out_c)> (0.0) ;
+    
+tel
+
+(*------------------------------------------------------*)
+(*------------------------------------------------------*)
+fun conv2d_valid_map_over_out_channels
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (stride_h, stride_w:int; (* Strides on input height and width *)
+   data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   (* The position in the output
+    * NOTE: out_h has changed position and is now at the end
+    * because it's the inner iteration *)
+   out_w,out_h: int;    
+  )
+returns (res: float^out_c_dim)
+let
+  res = mapi << out_c_dim >>
+    (conv2d_valid_sum_over_kern_w<<in_c_dim,in_h_dim,in_w_dim,
+                                   kern_h_dim, kern_w_dim,
+                                   out_c_dim >>)
+    <(stride_h, stride_w,
+      data,kern,
+      out_h,out_w)>() ;
+
+tel
+
+
+(*------------------------------------------------------*)
+(*------------------------------------------------------*)
+fun conv2d_valid_map_over_out_h
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     stride_h, stride_w:int; (* Strides on input height and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   out_w: int;    (* The position in the output *)
+  )
+returns (res: float^out_c_dim
+                   ^((in_h_dim-(kern_h_dim-1)+(stride_h-1))/stride_h))
+let
+  res = mapi << ((in_h_dim-(kern_h_dim-1)+(stride_h-1))/stride_h) >>
+    (conv2d_valid_map_over_out_channels
+        << in_c_dim,in_h_dim,in_w_dim,
+           kern_h_dim, kern_w_dim,
+           out_c_dim >>)
+	<(stride_h, stride_w,
+	  data,kern,
+          out_w)>() ;
+tel
+
+(*------------------------------------------------------*)
+(* 2D convolution, VALID method (no padding)            *)
+(*------------------------------------------------------*)
+fun conv2d_valid
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     stride_h, stride_w:int; (* Strides on input height and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+  )
+returns (res: float^out_c_dim
+                   ^((in_h_dim-(kern_h_dim-1)+(stride_h-1))/stride_h)
+                   ^((in_w_dim-(kern_w_dim-1)+(stride_w-1))/stride_w)
+        )
+let
+  res = mapi << ((in_w_dim-(kern_w_dim-1)+(stride_w-1))/stride_w) >>
+    (conv2d_valid_map_over_out_h
+        << in_c_dim,in_h_dim,in_w_dim,
+           stride_h,stride_w,
+           kern_h_dim, kern_w_dim,
+           out_c_dim >>)
+	<(data,kern)>() ;
+tel
+
+
+(*
+(*------------------------------------------------------*)
+(* Test for 2D convolution, VALID method                *)
+(*------------------------------------------------------*)
+const c278 : float^64^3^7^7 = 1.0^64^3^7^7
+
+node test_conv2d_valid(v594:float^3^230^230) returns (v595:float^64^112^112)
+let
+  v595 = conv2d_valid<<
+		                  3, (* input channels *)
+                           230, 230, (* input H,W *)
+			       2, 2, (* stride H, W *)
+		               7, 7, (* kernel H, W *)
+		                 64  (* output channels *)
+		     >>(v594,c278) ;
+tel
+*)
+
+
+(*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX*)
+(*======================================================*)
+(* CASE 2: SAME method with strides equal to 1 and both *)
+(* input and output having the same height and width    *)
+(*------------------------------------------------------*)
+
+(* We assume padding is always 0.0 *)
+const padding : float = 0.0
+
+
+(*------------------------------------------------------*)
+(* Get one input data value - SAME method, assuming     *)
+(* strides are always 1                                 *)
+(*------------------------------------------------------*)
+
+fun conv2d_same_simple_compute_pos(
+  (* Kernel size *)
+  kern_dim:int;
+  (* Target output position *)
+  out_pos:int; 
+  (* Current kernel position *)
+  kern_pos:int)
+  returns (pos_pad:int)
+var
+  pad_dim, pad_init, pos : int ;
+let
+  (* How much padding is needed on this dimension.    *)
+  (* By assuming that the stride is always 1 I could  *)
+  (* largely simplify this code.                      *)
+  pad_dim = kern_dim - 1 ;
+  (* The pad added before small indices *)
+  pad_init = pad_dim/2 ; 
+  (* The coordinates I need, if padding is not considered *)
+  pos = out_pos + kern_pos;
+  (* The coordinates I need, if padding is considered. If *)
+  (* this value is between 0 and the input data size, then*)
+  (* I use the data. If not, the padding (0). *)
+  pos_pad = pos - pad_init ;
+tel
+
+fun conv2d_same_simple_get_cell
+  (* Input data chans, height, and width must be static args
+   * because the input and output type depend on them *)
+  << in_c_dim, in_h_dim, in_w_dim: int; >>
+  (
+   kern_h_dim, kern_w_dim: int; (* Width and height of the kernel *)
+   data: float^in_c_dim^in_h_dim^in_w_dim;
+   chan: int;           (* The channel *)
+   out_h,out_w: int;    (* The position in the output *)
+   kern_h, kern_w: int; (* The position in the kernel *)
+  )
+returns (res: float)
+var
+  pos_h : int;
+let
+  (* These are the coordinates of the value I need in
+   * the input data. It may just happen that it is not
+   * available. *)
+  pos_h = conv2d_same_simple_compute_pos(kern_h_dim,
+                                         out_h,
+			                 kern_h) ;
+  (* If any of the dimensions is outside the scope of the
+   * input data, use the padding value.
+   * NOTE: we have to use the [><] operator of Heptagon, which
+   *       makes a lot of redundant tests. However, the access
+   *       operation with a default value cannot be used because
+   *       the default values are tables, too expensive to
+   *       manipulate. *)
+  if (pos_h < 0) or (pos_h >= in_h_dim) then
+    res = padding
+  else
+    var pos_w : int ; in
+      pos_w = conv2d_same_simple_compute_pos(kern_w_dim,
+                                             out_w,
+	  		                     kern_w) ;
+      if (pos_w < 0) or (pos_w >= in_w_dim) then
+        res = padding
+      else
+        res = data [> pos_w <] [> pos_h <] [> chan <]
+      end
+  end
+tel
+
+
+(*------------------------------------------------------*)
+(*------------------------------------------------------*)
+fun conv2d_same_simple_cell
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   out_h,out_w: int;    (* The position in the output *)
+   kern_h, kern_w: int; (* The position in the kernel *)
+   out_c: int;          (* The output channel *)
+   (* The following two must be in this last positions to
+    * allow accumulation in a fold operation *)
+   in_c : int ;         (* The input channel *)
+   acc: float           (* Accumulator - this will be used in a reduce op *)
+   )
+returns (res: float)
+var
+  data_cell, kern_cell: float;
+let
+  data_cell = conv2d_same_simple_get_cell<<in_c_dim,in_h_dim,in_w_dim>>
+                                   (kern_h_dim, kern_w_dim,
+	   		            data,in_c,out_h,out_w,kern_h,kern_w) ;
+  kern_cell = kern [> kern_w <] [> kern_h <] [> in_c <] [> out_c <];
+  res = (data_cell *. kern_cell) +. acc;
+tel
+
+(*------------------------------------------------------*)
+(*------------------------------------------------------*)
+fun conv2d_same_simple_sum_over_in_channels
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   out_h,out_w: int;    (* The position in the output *)
+   out_c: int;          (* The output channel *)
+   kern_w: int;
+   (* The following two must be in this last positions to
+    * allow accumulation in a fold operation *)
+   kern_h : int ;
+   acc: float)
+returns (res: float)
+let
+  res = foldi << in_c_dim >>
+           (conv2d_same_simple_cell << in_c_dim,in_h_dim,in_w_dim,
+                                 kern_h_dim, kern_w_dim,
+                                 out_c_dim >>)
+           <(data, kern,
+             out_h, out_w, kern_h, kern_w, out_c)> (acc) ; 
+tel
+
+(*------------------------------------------------------*)
+(*------------------------------------------------------*)
+fun conv2d_same_simple_sum_over_kern_h
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   out_h,out_w: int;    (* The position in the output *)
+   out_c: int;          (* The output channel *)
+   kern_w: int;
+   acc: float)
+returns (res: float)
+let
+
+  res = foldi << kern_h_dim >>
+    (conv2d_same_simple_sum_over_in_channels << in_c_dim,in_h_dim,in_w_dim,
+                                          kern_h_dim, kern_w_dim,
+                                          out_c_dim >>)
+    <(data,kern,
+      out_h,out_w,out_c,kern_w)> (acc) ;
+    
+tel
+
+(*------------------------------------------------------*)
+(*------------------------------------------------------*)
+fun conv2d_same_simple_sum_over_kern_w
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   out_h,out_w: int;    (* The position in the output *)
+   out_c: int;          (* The output channel *)
+  )
+returns (res: float)
+let
+
+  res = foldi << kern_w_dim >>
+    (conv2d_same_simple_sum_over_kern_h << in_c_dim,in_h_dim,in_w_dim,
+                                     kern_h_dim, kern_w_dim,
+                                     out_c_dim >>)
+    <(data,kern,
+      out_h,out_w,out_c)> (0.0) ;
+    
+tel
+
+
+(*------------------------------------------------------*)
+(*------------------------------------------------------*)
+fun conv2d_same_simple_map_over_out_channels
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   (* The position in the output
+    * NOTE: out_h has changed position and is now at the end
+    * because it's the inner iteration *)
+   out_w,out_h: int;    
+  )
+returns (res: float^out_c_dim)
+let
+  res = mapi << out_c_dim >>
+    (conv2d_same_simple_sum_over_kern_w<<in_c_dim,in_h_dim,in_w_dim,
+                                   kern_h_dim, kern_w_dim,
+                                   out_c_dim >>)
+    <(data,kern,
+      out_h,out_w)>() ;
+
+tel
+
+
+(*------------------------------------------------------*)
+(*------------------------------------------------------*)
+fun conv2d_same_simple_map_over_out_h
+  << in_c_dim,in_h_dim, in_w_dim: int; (* Input data chans, height, and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   out_w: int;    (* The position in the output *)
+  )
+returns (res: float^out_c_dim^in_h_dim)
+let
+  res = mapi << in_h_dim >>
+    (conv2d_same_simple_map_over_out_channels
+        << in_c_dim,in_h_dim,in_w_dim,
+           kern_h_dim, kern_w_dim,
+           out_c_dim >>)
+	<(data,kern,out_w)>() ;
+tel
+
+(*------------------------------------------------------*)
+(* 2D convolution, SAME method, simplified:             *)
+(* - with padding                                       *)
+(* - with strides of 1 on all dims                      *)
+(* - with same H and W on input and output              *)
+(*------------------------------------------------------*)
+fun conv2d_same_simple
+  << in_c_dim,in_h_dim,in_w_dim: int; (* Input data chans, height, and width *)
+     kern_h_dim, kern_w_dim: int;
+     out_c_dim: int >>
+  (data: float^in_c_dim^in_h_dim^in_w_dim;
+   kern: float^out_c_dim^in_c_dim^kern_h_dim^kern_w_dim;
+   )
+  returns(res:float^out_c_dim^in_h_dim^in_w_dim)
+let
+  res = mapi << in_w_dim >>
+    (conv2d_same_simple_map_over_out_h
+        << in_c_dim,in_h_dim,in_w_dim,
+           kern_h_dim, kern_w_dim,
+           out_c_dim >>)
+	<(data,kern)>() ;
+tel
+
+(*
+(*------------------------------------------------------*)
+(* Test for 2D convolution, SAME method, simplified     *)
+(*------------------------------------------------------*)
+const cXXX : float^64^3^7^7 = 1.0^64^3^7^7
+
+node test_conv2d_same_simple(v594:float^3^230^230) returns (v595:float^64^230^230)
+let
+  v595 = conv2d_same_simple<<
+		                  3, (* input channels *)
+                           230, 230, (* input H,W *)
+		               7, 7, (* kernel H, W *)
+		                 64  (* output channels *)
+		     >>(v594,cXXX) ;
+tel
+*)
+
+(*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX*)
+(*======================================================*)
+(* CASE 3: SAME method, general                         *)
+(*------------------------------------------------------*)
+
+(*------------------------------------------------------*)
+(* In the SAME method, determine how much padding is    *)
+(* needed on a given dimension, based on input data     *)
+(* size, stride, and kernel size.                       *)
+(* I should check whether the case where stride does not*)
+(* divide input dimension is interesting, because it    *)
+(* makes computations complex.                          *)
+(*------------------------------------------------------*)
+
+fun compute_position(
+  (* Size of input data, stride, and kernel size *)
+  in_dim,stride_dim,kern_dim:int;
+  (* Target output position *)
+  out_pos:int; 
+  (* Current kernel position *)
+  kern_pos:int)
+  returns (pos_pad:int)
+var
+  pad_dim, pad_init, pos : int ;
+let
+  (* How much padding is needed on this dimension.    *)
+  (* By assuming that the stride is always 1 I could  *)
+  (* largely simplify this code.                      *)
+  pad_dim = 
+    if in_dim % stride_dim = 0
+    then (kern_dim - stride_dim)
+    else (kern_dim - (in_dim % stride_dim)) ;
+  (* The pad added before small indices *)
+  pad_init = pad_dim/2 ;
+  
+  (* The coordinates I need, if padding is not considered *)
+  pos = stride_dim * out_pos + kern_pos;
+  
+  (* The coordinates I need, if padding is considered. If *)
+  (* this value is between 0 and the input data size, then*)
+  (* I use the data. If not, the padding (0). *)
+  pos_pad = pos - pad_init ;
+tel
+
+(*------------------------------------------------------*)
+(* Get one input data value - SAME method, with padding *)
+(*------------------------------------------------------*)
+
+fun get_cell_same
+  (* Input data chans, height, and width must be static args
+   * because the input and output type depend on them *)
+  << in_c_dim, in_h_dim, in_w_dim: int; >>
+  (
+   kern_h_dim, kern_w_dim: int; (* Width and height of the kernel *)
+   stride_h, stride_w: int;     (* Strides on input height and width *)
+   data: float^in_c_dim^in_h_dim^in_w_dim;
+   out_h,out_w: int;            (* The position in the output *)
+   kern_h, kern_w: int;         (* The position in the kernel *)
+  )
+returns (res: float^in_c_dim)
+var
+  pos_h : int;
+let
+  (* These are the coordinates of the value I need in
+   * the input data. It may just happen that it is not
+   * available. *)
+  pos_h = compute_position(in_h_dim,stride_h,kern_h_dim,
+                           out_h,
+			   kern_h) ;
+  (* If any of the dimensions is outside the scope of the
+   * input data, use the padding value.
+   * NOTE: we have to use the [><] operator of Heptagon, which
+   *       makes a lot of redundant tests. However, the access
+   *       operation with a default value cannot be used because
+   *       the default values are tables, too expensive to
+   *       manipulate. *)
+  if (pos_h < 0) or (pos_h >= in_h_dim) then
+    res = padding^in_c_dim
+  else
+    var pos_w : int ; in
+      pos_w = compute_position(in_w_dim,stride_w,kern_w_dim,
+                               out_w,
+	  		       kern_w) ;
+      if (pos_w < 0) or (pos_w >= in_w_dim) then
+        res = padding^in_c_dim
+      else
+        res = data [> pos_w <] [> pos_h <]
+      end
+  end
+tel
+
+(*======================================================*)
+(* MaxPool2D                                            *)
+(* Assumes no pooling happens on the channels dimension *)
+(* NOTE: the output dimensions can be computed from the *)
+(*    other static arguments, but the formula is too    *)
+(*    complicated, so it's easier to just have these as *)
+(*    extra static inputs.                              *)
+(* The window is located like for conv2d_valid          *)
+(*------------------------------------------------------*)
+
+
+fun max_pool_aux4
+  (* Input data channels, height and width must be
+   * static inputs to allow output dimensioning *)
+  <<in_c_dim, in_h_dim, in_w_dim:int>>
+  (data:float^in_c_dim^in_h_dim^in_w_dim;
+   stride_h, stride_w:int;
+   out_w,out_h,win_w,win_h:int;
+   acc:float^in_c_dim)
+  returns
+  (out:float^in_c_dim)
+let
+  out = map<<in_c_dim>> max (acc,
+                             data
+                                [> stride_w * out_w + win_w <]
+                                [> stride_h * out_h + win_h <]
+		             ) ;
+tel
+
+fun max_pool_aux3
+  (* Input data channels, height and width must be
+   * static inputs to allow output dimensioning *)
+  <<in_c_dim, in_h_dim, in_w_dim:int;
+    win_h_dim:int>>
+  (data:float^in_c_dim^in_h_dim^in_w_dim;
+   stride_h, stride_w:int;
+   out_w,out_h,win_w:int;
+   acc:float^in_c_dim)
+  returns
+  (out:float^in_c_dim)
+let
+  out = foldi<<win_h_dim>>
+          (max_pool_aux4<<in_c_dim,in_h_dim,in_w_dim>>)
+	  <(data,stride_h,stride_w,out_w,out_h,win_w)> (acc) ;
+tel
+
+(* I should put here the true minus infinity, defined as
+ * (-1)*INFINITY, the latter defined in math.h. But it's too
+ * complicated, so I put the smallest value possible. *)
+const minus_infinity : float = -.3.4e38 (* 32 bit *)
+(* const minus_infinity : float = -.1.80e308 (* 64 bit *) *)
+
+fun max_pool_aux2
+  (* Input data channels, height and width must be
+   * static inputs to allow output dimensioning *)
+  <<in_c_dim, in_h_dim, in_w_dim:int;
+    win_h_dim,win_w_dim:int>>
+  (data:float^in_c_dim^in_h_dim^in_w_dim;
+   stride_h,stride_w:int;
+   out_w,out_h:int)
+  returns
+  (out:float^in_c_dim)
+let
+  out = foldi<<win_w_dim>>
+          (max_pool_aux3<<in_c_dim,in_h_dim,in_w_dim,win_h_dim>>)
+	  <(data,stride_h,stride_w,out_w,out_h)> (minus_infinity^in_c_dim) ;
+tel
+
+fun max_pool_aux1
+  (* Input data channels, height and width must be
+   * static inputs to allow output dimensioning *)
+  <<in_c_dim, in_h_dim, in_w_dim:int;
+    stride_h:int;
+    win_h_dim,win_w_dim:int>>
+  (data:float^in_c_dim^in_h_dim^in_w_dim;
+   stride_w:int;
+   out_w:int)
+  returns
+  (out:float^in_c_dim
+            ^((in_h_dim-(win_h_dim-1)+(stride_h-1))/stride_h)
+  )
+let
+  out = mapi<< ((in_h_dim-(win_h_dim-1)+(stride_h-1))/stride_h) >>
+          (max_pool_aux2<<in_c_dim,in_h_dim,in_w_dim,win_h_dim,win_w_dim>>)
+	  <(data,stride_h,stride_w,out_w)> () ;
+tel
+
+fun max_pool
+  (* Input data channels, height and width must be
+   * static inputs to allow output dimensioning *)
+  <<in_c_dim, in_h_dim, in_w_dim:int;
+    stride_h, stride_w:int;
+    win_h_dim, win_w_dim:int>>
+  (data:float^in_c_dim^in_h_dim^in_w_dim)
+  returns
+  (out:float^in_c_dim
+            ^((in_h_dim-(win_h_dim-1)+(stride_h-1))/stride_h)
+            ^((in_w_dim-(win_w_dim-1)+(stride_w-1))/stride_w)
+  )
+let
+  out = mapi<< ((in_w_dim-(win_w_dim-1)+(stride_w-1))/stride_w) >>
+          (max_pool_aux1<<in_c_dim,in_h_dim,in_w_dim,
+	                  stride_h,
+			  win_h_dim,win_w_dim>>)
+	  <(data,stride_w)> () ;
+tel
+
+
+(*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX*)
+(*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX*)
+(*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX*)
+(*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX*)
+(*======================================================*)
+(* The Resnet50 model                                   *)
+(*------------------------------------------------------*)
+
+const v273 : float^64 = 1.0^64
+const v274 : float^64 = 1.0^64
+const v275 : float^64 = 1.0^64
+const v276 : float^64 = 1.0^64
+const v277 : float^64 = 1.0^64
+const v278 : float^64^3^7^7 = 1.0^64^3^7^7
+const v279 : float^256 = 1.0^256
+const v280 : float^256 = 1.0^256
+const v281 : float^256 = 1.0^256
+const v282 : float^256 = 1.0^256
+const v283 : float^256 = 1.0^256
+const v284 : float^256^64^1^1 = 1.0^256^64^1^1
+const v285 : float^64 = 1.0^64
+const v286 : float^64 = 1.0^64
+const v287 : float^64 = 1.0^64
+const v288 : float^64 = 1.0^64
+const v289 : float^64 = 1.0^64
+const v290 : float^64^64^1^1 = 1.0^64^64^1^1
+const v291 : float^64 = 1.0^64
+const v292 : float^64 = 1.0^64
+const v293 : float^64 = 1.0^64
+const v294 : float^64 = 1.0^64
+const v295 : float^64 = 1.0^64
+const v296 : float^64^64^3^3 = 1.0^64^64^3^3
+const v297 : float^256 = 1.0^256
+const v298 : float^256 = 1.0^256
+const v299 : float^256 = 1.0^256
+const v300 : float^256 = 1.0^256
+const v301 : float^256 = 1.0^256
+const v302 : float^256^64^1^1 = 1.0^256^64^1^1
+const v303 : float^64 = 1.0^64
+const v304 : float^64 = 1.0^64
+const v305 : float^64 = 1.0^64
+const v306 : float^64 = 1.0^64
+const v307 : float^64 = 1.0^64
+const v308 : float^64^256^1^1 = 1.0^64^256^1^1
+const v309 : float^64 = 1.0^64
+const v310 : float^64 = 1.0^64
+const v311 : float^64 = 1.0^64
+const v312 : float^64 = 1.0^64
+const v313 : float^64 = 1.0^64
+const v314 : float^64^64^3^3 = 1.0^64^64^3^3
+const v315 : float^256 = 1.0^256
+const v316 : float^256 = 1.0^256
+const v317 : float^256 = 1.0^256
+const v318 : float^256 = 1.0^256
+const v319 : float^256 = 1.0^256
+const v320 : float^256^64^1^1 = 1.0^256^64^1^1
+const v321 : float^64 = 1.0^64
+const v322 : float^64 = 1.0^64
+const v323 : float^64 = 1.0^64
+const v324 : float^64 = 1.0^64
+const v325 : float^64 = 1.0^64
+const v326 : float^64^256^1^1 = 1.0^64^256^1^1
+const v327 : float^64 = 1.0^64
+const v328 : float^64 = 1.0^64
+const v329 : float^64 = 1.0^64
+const v330 : float^64 = 1.0^64
+const v331 : float^64 = 1.0^64
+const v332 : float^64^64^3^3 = 1.0^64^64^3^3
+const v333 : float^256 = 1.0^256
+const v334 : float^256 = 1.0^256
+const v335 : float^256 = 1.0^256
+const v336 : float^256 = 1.0^256
+const v337 : float^256 = 1.0^256
+const v338 : float^256^64^1^1 = 1.0^256^64^1^1
+const v339 : float^512 = 1.0^512
+const v340 : float^512 = 1.0^512
+const v341 : float^512 = 1.0^512
+const v342 : float^512 = 1.0^512
+const v343 : float^512 = 1.0^512
+const v344 : float^512^256^1^1 = 1.0^512^256^1^1
+const v345 : float^128 = 1.0^128
+const v346 : float^128 = 1.0^128
+const v347 : float^128 = 1.0^128
+const v348 : float^128 = 1.0^128
+const v349 : float^128 = 1.0^128
+const v350 : float^128^256^1^1 = 1.0^128^256^1^1
+const v351 : float^128 = 1.0^128
+const v352 : float^128 = 1.0^128
+const v353 : float^128 = 1.0^128
+const v354 : float^128 = 1.0^128
+const v355 : float^128 = 1.0^128
+const v356 : float^128^128^3^3 = 1.0^128^128^3^3
+const v357 : float^512 = 1.0^512
+const v358 : float^512 = 1.0^512
+const v359 : float^512 = 1.0^512
+const v360 : float^512 = 1.0^512
+const v361 : float^512 = 1.0^512
+const v362 : float^512^128^1^1 = 1.0^512^128^1^1
+const v363 : float^128 = 1.0^128
+const v364 : float^128 = 1.0^128
+const v365 : float^128 = 1.0^128
+const v366 : float^128 = 1.0^128
+const v367 : float^128 = 1.0^128
+const v368 : float^128^512^1^1 = 1.0^128^512^1^1
+const v369 : float^128 = 1.0^128
+const v370 : float^128 = 1.0^128
+const v371 : float^128 = 1.0^128
+const v372 : float^128 = 1.0^128
+const v373 : float^128 = 1.0^128
+const v374 : float^128^128^3^3 = 1.0^128^128^3^3
+const v375 : float^512 = 1.0^512
+const v376 : float^512 = 1.0^512
+const v377 : float^512 = 1.0^512
+const v378 : float^512 = 1.0^512
+const v379 : float^512 = 1.0^512
+const v380 : float^512^128^1^1 = 1.0^512^128^1^1
+const v381 : float^128 = 1.0^128
+const v382 : float^128 = 1.0^128
+const v383 : float^128 = 1.0^128
+const v384 : float^128 = 1.0^128
+const v385 : float^128 = 1.0^128
+const v386 : float^128^512^1^1 = 1.0^128^512^1^1
+const v387 : float^128 = 1.0^128
+const v388 : float^128 = 1.0^128
+const v389 : float^128 = 1.0^128
+const v390 : float^128 = 1.0^128
+const v391 : float^128 = 1.0^128
+const v392 : float^128^128^3^3 = 1.0^128^128^3^3
+const v393 : float^512 = 1.0^512
+const v394 : float^512 = 1.0^512
+const v395 : float^512 = 1.0^512
+const v396 : float^512 = 1.0^512
+const v397 : float^512 = 1.0^512
+const v398 : float^512^128^1^1 = 1.0^512^128^1^1
+const v399 : float^128 = 1.0^128
+const v400 : float^128 = 1.0^128
+const v401 : float^128 = 1.0^128
+const v402 : float^128 = 1.0^128
+const v403 : float^128 = 1.0^128
+const v404 : float^128^512^1^1 = 1.0^128^512^1^1
+const v405 : float^128 = 1.0^128
+const v406 : float^128 = 1.0^128
+const v407 : float^128 = 1.0^128
+const v408 : float^128 = 1.0^128
+const v409 : float^128 = 1.0^128
+const v410 : float^128^128^3^3 = 1.0^128^128^3^3
+const v411 : float^512 = 1.0^512
+const v412 : float^512 = 1.0^512
+const v413 : float^512 = 1.0^512
+const v414 : float^512 = 1.0^512
+const v415 : float^512 = 1.0^512
+const v416 : float^512^128^1^1 = 1.0^512^128^1^1
+const v417 : float^1024 = 1.0^1024
+const v418 : float^1024 = 1.0^1024
+const v419 : float^1024 = 1.0^1024
+const v420 : float^1024 = 1.0^1024
+const v421 : float^1024 = 1.0^1024
+const v422 : float^1024^512^1^1 = 1.0^1024^512^1^1
+const v423 : float^256 = 1.0^256
+const v424 : float^256 = 1.0^256
+const v425 : float^256 = 1.0^256
+const v426 : float^256 = 1.0^256
+const v427 : float^256 = 1.0^256
+const v428 : float^256^512^1^1 = 1.0^256^512^1^1
+const v429 : float^256 = 1.0^256
+const v430 : float^256 = 1.0^256
+const v431 : float^256 = 1.0^256
+const v432 : float^256 = 1.0^256
+const v433 : float^256 = 1.0^256
+const v434 : float^256^256^3^3 = 1.0^256^256^3^3
+const v435 : float^1024 = 1.0^1024
+const v436 : float^1024 = 1.0^1024
+const v437 : float^1024 = 1.0^1024
+const v438 : float^1024 = 1.0^1024
+const v439 : float^1024 = 1.0^1024
+const v440 : float^1024^256^1^1 = 1.0^1024^256^1^1
+const v441 : float^256 = 1.0^256
+const v442 : float^256 = 1.0^256
+const v443 : float^256 = 1.0^256
+const v444 : float^256 = 1.0^256
+const v445 : float^256 = 1.0^256
+const v446 : float^256^1024^1^1 = 1.0^256^1024^1^1
+const v447 : float^256 = 1.0^256
+const v448 : float^256 = 1.0^256
+const v449 : float^256 = 1.0^256
+const v450 : float^256 = 1.0^256
+const v451 : float^256 = 1.0^256
+const v452 : float^256^256^3^3 = 1.0^256^256^3^3
+const v453 : float^1024 = 1.0^1024
+const v454 : float^1024 = 1.0^1024
+const v455 : float^1024 = 1.0^1024
+const v456 : float^1024 = 1.0^1024
+const v457 : float^1024 = 1.0^1024
+const v458 : float^1024^256^1^1 = 1.0^1024^256^1^1
+const v459 : float^256 = 1.0^256
+const v460 : float^256 = 1.0^256
+const v461 : float^256 = 1.0^256
+const v462 : float^256 = 1.0^256
+const v463 : float^256 = 1.0^256
+const v464 : float^256^1024^1^1 = 1.0^256^1024^1^1
+const v465 : float^256 = 1.0^256
+const v466 : float^256 = 1.0^256
+const v467 : float^256 = 1.0^256
+const v468 : float^256 = 1.0^256
+const v469 : float^256 = 1.0^256
+const v470 : float^256^256^3^3 = 1.0^256^256^3^3
+const v471 : float^1024 = 1.0^1024
+const v472 : float^1024 = 1.0^1024
+const v473 : float^1024 = 1.0^1024
+const v474 : float^1024 = 1.0^1024
+const v475 : float^1024 = 1.0^1024
+const v476 : float^1024^256^1^1 = 1.0^1024^256^1^1
+const v477 : float^256 = 1.0^256
+const v478 : float^256 = 1.0^256
+const v479 : float^256 = 1.0^256
+const v480 : float^256 = 1.0^256
+const v481 : float^256 = 1.0^256
+const v482 : float^256^1024^1^1 = 1.0^256^1024^1^1
+const v483 : float^256 = 1.0^256
+const v484 : float^256 = 1.0^256
+const v485 : float^256 = 1.0^256
+const v486 : float^256 = 1.0^256
+const v487 : float^256 = 1.0^256
+const v488 : float^256^256^3^3 = 1.0^256^256^3^3
+const v489 : float^1024 = 1.0^1024
+const v490 : float^1024 = 1.0^1024
+const v491 : float^1024 = 1.0^1024
+const v492 : float^1024 = 1.0^1024
+const v493 : float^1024 = 1.0^1024
+const v494 : float^1024^256^1^1 = 1.0^1024^256^1^1
+const v495 : float^256 = 1.0^256
+const v496 : float^256 = 1.0^256
+const v497 : float^256 = 1.0^256
+const v498 : float^256 = 1.0^256
+const v499 : float^256 = 1.0^256
+const v500 : float^256^1024^1^1 = 1.0^256^1024^1^1
+const v501 : float^256 = 1.0^256
+const v502 : float^256 = 1.0^256
+const v503 : float^256 = 1.0^256
+const v504 : float^256 = 1.0^256
+const v505 : float^256 = 1.0^256
+const v506 : float^256^256^3^3 = 1.0^256^256^3^3
+const v507 : float^1024 = 1.0^1024
+const v508 : float^1024 = 1.0^1024
+const v509 : float^1024 = 1.0^1024
+const v510 : float^1024 = 1.0^1024
+const v511 : float^1024 = 1.0^1024
+const v512 : float^1024^256^1^1 = 1.0^1024^256^1^1
+const v513 : float^256 = 1.0^256
+const v514 : float^256 = 1.0^256
+const v515 : float^256 = 1.0^256
+const v516 : float^256 = 1.0^256
+const v517 : float^256 = 1.0^256
+const v518 : float^256^1024^1^1 = 1.0^256^1024^1^1
+const v519 : float^256 = 1.0^256
+const v520 : float^256 = 1.0^256
+const v521 : float^256 = 1.0^256
+const v522 : float^256 = 1.0^256
+const v523 : float^256 = 1.0^256
+const v524 : float^256^256^3^3 = 1.0^256^256^3^3
+const v525 : float^1024 = 1.0^1024
+const v526 : float^1024 = 1.0^1024
+const v527 : float^1024 = 1.0^1024
+const v528 : float^1024 = 1.0^1024
+const v529 : float^1024 = 1.0^1024
+const v530 : float^1024^256^1^1 = 1.0^1024^256^1^1
+const v531 : float^2048 = 1.0^2048
+const v532 : float^2048 = 1.0^2048
+const v533 : float^2048 = 1.0^2048
+const v534 : float^2048 = 1.0^2048
+const v535 : float^2048 = 1.0^2048
+const v536 : float^2048^1024^1^1 = 1.0^2048^1024^1^1
+const v537 : float^512 = 1.0^512
+const v538 : float^512 = 1.0^512
+const v539 : float^512 = 1.0^512
+const v540 : float^512 = 1.0^512
+const v541 : float^512 = 1.0^512
+const v542 : float^512^1024^1^1 = 1.0^512^1024^1^1
+const v543 : float^512 = 1.0^512
+const v544 : float^512 = 1.0^512
+const v545 : float^512 = 1.0^512
+const v546 : float^512 = 1.0^512
+const v547 : float^512 = 1.0^512
+const v548 : float^512^512^3^3 = 1.0^512^512^3^3
+const v549 : float^2048 = 1.0^2048
+const v550 : float^2048 = 1.0^2048
+const v551 : float^2048 = 1.0^2048
+const v552 : float^2048 = 1.0^2048
+const v553 : float^2048 = 1.0^2048
+const v554 : float^2048^512^1^1 = 1.0^2048^512^1^1
+const v555 : float^512 = 1.0^512
+const v556 : float^512 = 1.0^512
+const v557 : float^512 = 1.0^512
+const v558 : float^512 = 1.0^512
+const v559 : float^512 = 1.0^512
+const v560 : float^512^2048^1^1 = 1.0^512^2048^1^1
+const v561 : float^512 = 1.0^512
+const v562 : float^512 = 1.0^512
+const v563 : float^512 = 1.0^512
+const v564 : float^512 = 1.0^512
+const v565 : float^512 = 1.0^512
+const v566 : float^512^512^3^3 = 1.0^512^512^3^3
+const v567 : float^2048 = 1.0^2048
+const v568 : float^2048 = 1.0^2048
+const v569 : float^2048 = 1.0^2048
+const v570 : float^2048 = 1.0^2048
+const v571 : float^2048 = 1.0^2048
+const v572 : float^2048^512^1^1 = 1.0^2048^512^1^1
+const v573 : float^512 = 1.0^512
+const v574 : float^512 = 1.0^512
+const v575 : float^512 = 1.0^512
+const v576 : float^512 = 1.0^512
+const v577 : float^512 = 1.0^512
+const v578 : float^512^2048^1^1 = 1.0^512^2048^1^1
+const v579 : float^512 = 1.0^512
+const v580 : float^512 = 1.0^512
+const v581 : float^512 = 1.0^512
+const v582 : float^512 = 1.0^512
+const v583 : float^512 = 1.0^512
+const v584 : float^512^512^3^3 = 1.0^512^512^3^3
+const v585 : float^2048 = 1.0^2048
+const v586 : float^2048 = 1.0^2048
+const v587 : float^2048 = 1.0^2048
+const v588 : float^2048 = 1.0^2048
+const v589 : float^2048 = 1.0^2048
+const v590 : float^2048^512^1^1 = 1.0^2048^512^1^1
+const v591 : float^1000 = 1.0^1000
+const v592 : float^1000^2048 = 1.0^1000^2048
+
+(*==================================================*)
+(* Function start                                   *)
+(*==================================================*)
+fun resnet50(data:float^3^224^224) returns (v771:float^1000)
+var
+
+  (*==================================================*)
+  (* Equations start                                  *)
+  (*==================================================*)  
+   v594 : float^3^230^230 ;
+   v595 : float^64^112^112 ;
+   v596 : float^64^112^112 ;
+   vy : float^64^112^112 ;
+   v597 : float^64^112^112 ;
+   v598 : float^64^114^114 ;
+   v599 : float^64^56^56 ;
+   v600 : float^256^56^56 ;
+   v601 : float^256^56^56 ;
+   vy_0 : float^256^56^56 ;
+   v602 : float^64^56^56 ;
+   v603 : float^64^56^56 ;
+   vy_6 : float^64^56^56 ;
+   v604 : float^64^56^56 ;
+   v605 : float^64^56^56 ;
+   v606 : float^64^56^56 ;
+   vy_12 : float^64^56^56 ;
+   v607 : float^64^56^56 ;
+   v608 : float^256^56^56 ;
+   v609 : float^256^56^56 ;
+   vy_18 : float^256^56^56 ;
+   v610 : float^256^56^56 ;
+   v611 : float^256^56^56 ;
+   v612 : float^64^56^56 ;
+   v613 : float^64^56^56 ;
+   vy_24 : float^64^56^56 ;
+   v614 : float^64^56^56 ;
+   v615 : float^64^56^56 ;
+   v616 : float^64^56^56 ;
+   vy_30 : float^64^56^56 ;
+   v617 : float^64^56^56 ;
+   v618 : float^256^56^56 ;
+   v619 : float^256^56^56 ;
+   vy_36 : float^256^56^56 ;
+   v620 : float^256^56^56 ;
+   v621 : float^256^56^56 ;
+   v622 : float^64^56^56 ;
+   v623 : float^64^56^56 ;
+   vy_42 : float^64^56^56 ;
+   v624 : float^64^56^56 ;
+   v625 : float^64^56^56 ;
+   v626 : float^64^56^56 ;
+   vy_48 : float^64^56^56 ;
+   v627 : float^64^56^56 ;
+   v628 : float^256^56^56 ;
+   v629 : float^256^56^56 ;
+   vy_54 : float^256^56^56 ;
+   v630 : float^256^56^56 ;
+   v631 : float^256^56^56 ;
+   v632 : float^512^28^28 ;
+   v633 : float^512^28^28 ;
+   vy_60 : float^512^28^28 ;
+   v634 : float^128^28^28 ;
+   v635 : float^128^28^28 ;
+   vy_66 : float^128^28^28 ;
+   v636 : float^128^28^28 ;
+   v637 : float^128^28^28 ;
+   v638 : float^128^28^28 ;
+   vy_72 : float^128^28^28 ;
+   v639 : float^128^28^28 ;
+   v640 : float^512^28^28 ;
+   v641 : float^512^28^28 ;
+   vy_78 : float^512^28^28 ;
+   v642 : float^512^28^28 ;
+   v643 : float^512^28^28 ;
+   v644 : float^128^28^28 ;
+   v645 : float^128^28^28 ;
+   vy_84 : float^128^28^28 ;
+   v646 : float^128^28^28 ;
+   v647 : float^128^28^28 ;
+   v648 : float^128^28^28 ;
+   vy_90 : float^128^28^28 ;
+   v649 : float^128^28^28 ;
+   v650 : float^512^28^28 ;
+   v651 : float^512^28^28 ;
+   vy_96 : float^512^28^28 ;
+   v652 : float^512^28^28 ;
+   v653 : float^512^28^28 ;
+   v654 : float^128^28^28 ;
+   v655 : float^128^28^28 ;
+   vy_102 : float^128^28^28 ;
+   v656 : float^128^28^28 ;
+   v657 : float^128^28^28 ;
+   v658 : float^128^28^28 ;
+   vy_108 : float^128^28^28 ;
+   v659 : float^128^28^28 ;
+   v660 : float^512^28^28 ;
+   v661 : float^512^28^28 ;
+   vy_114 : float^512^28^28 ;
+   v662 : float^512^28^28 ;
+   v663 : float^512^28^28 ;
+   v664 : float^128^28^28 ;
+   v665 : float^128^28^28 ;
+   vy_120 : float^128^28^28 ;
+   v666 : float^128^28^28 ;
+   v667 : float^128^28^28 ;
+   v668 : float^128^28^28 ;
+   vy_126 : float^128^28^28 ;
+   v669 : float^128^28^28 ;
+   v670 : float^512^28^28 ;
+   v671 : float^512^28^28 ;
+   vy_132 : float^512^28^28 ;
+   v672 : float^512^28^28 ;
+   v673 : float^512^28^28 ;
+   v674 : float^1024^14^14 ;
+   v675 : float^1024^14^14 ;
+   vy_138 : float^1024^14^14 ;
+   v676 : float^256^14^14 ;
+   v677 : float^256^14^14 ;
+   vy_144 : float^256^14^14 ;
+   v678 : float^256^14^14 ;
+   v679 : float^256^14^14 ;
+   v680 : float^256^14^14 ;
+   vy_150 : float^256^14^14 ;
+   v681 : float^256^14^14 ;
+   v682 : float^1024^14^14 ;
+   v683 : float^1024^14^14 ;
+   vy_156 : float^1024^14^14 ;
+   v684 : float^1024^14^14 ;
+   v685 : float^1024^14^14 ;
+   v686 : float^256^14^14 ;
+   v687 : float^256^14^14 ;
+   vy_162 : float^256^14^14 ;
+   v688 : float^256^14^14 ;
+   v689 : float^256^14^14 ;
+   v690 : float^256^14^14 ;
+   vy_168 : float^256^14^14 ;
+   v691 : float^256^14^14 ;
+   v692 : float^1024^14^14 ;
+   v693 : float^1024^14^14 ;
+   vy_174 : float^1024^14^14 ;
+   v694 : float^1024^14^14 ;
+   v695 : float^1024^14^14 ;
+   v696 : float^256^14^14 ;
+   v697 : float^256^14^14 ;
+   vy_180 : float^256^14^14 ;
+   v698 : float^256^14^14 ;
+   v699 : float^256^14^14 ;
+   v700 : float^256^14^14 ;
+   vy_186 : float^256^14^14 ;
+   v701 : float^256^14^14 ;
+   v702 : float^1024^14^14 ;
+   v703 : float^1024^14^14 ;
+   vy_192 : float^1024^14^14 ;
+   v704 : float^1024^14^14 ;
+   v705 : float^1024^14^14 ;
+   v706 : float^256^14^14 ;
+   v707 : float^256^14^14 ;
+   vy_198 : float^256^14^14 ;
+   v708 : float^256^14^14 ;
+   v709 : float^256^14^14 ;
+   v710 : float^256^14^14 ;
+   vy_204 : float^256^14^14 ;
+   v711 : float^256^14^14 ;
+   v712 : float^1024^14^14 ;
+   v713 : float^1024^14^14 ;
+   vy_210 : float^1024^14^14 ;
+   v714 : float^1024^14^14 ;
+   v715 : float^1024^14^14 ;
+   v716 : float^256^14^14 ;
+   v717 : float^256^14^14 ;
+   vy_216 : float^256^14^14 ;
+   v718 : float^256^14^14 ;
+   v719 : float^256^14^14 ;
+   v720 : float^256^14^14 ;
+   vy_222 : float^256^14^14 ;
+   v721 : float^256^14^14 ;
+   v722 : float^1024^14^14 ;
+   v723 : float^1024^14^14 ;
+   vy_228 : float^1024^14^14 ;
+   v724 : float^1024^14^14 ;
+   v725 : float^1024^14^14 ;
+   v726 : float^256^14^14 ;
+   v727 : float^256^14^14 ;
+   vy_234 : float^256^14^14 ;
+   v728 : float^256^14^14 ;
+   v729 : float^256^14^14 ;
+   v730 : float^256^14^14 ;
+   vy_240 : float^256^14^14 ;
+   v731 : float^256^14^14 ;
+   v732 : float^1024^14^14 ;
+   v733 : float^1024^14^14 ;
+   vy_246 : float^1024^14^14 ;
+   v734 : float^1024^14^14 ;
+   v735 : float^1024^14^14 ;
+   v736 : float^2048^7^7 ;
+   v737 : float^2048^7^7 ;
+   vy_252 : float^2048^7^7 ;
+   v738 : float^512^7^7 ;
+   v739 : float^512^7^7 ;
+   vy_258 : float^512^7^7 ;
+   v740 : float^512^7^7 ;
+   v741 : float^512^7^7 ;
+   v742 : float^512^7^7 ;
+   vy_264 : float^512^7^7 ;
+   v743 : float^512^7^7 ;
+   v744 : float^2048^7^7 ;
+   v745 : float^2048^7^7 ;
+   vy_270 : float^2048^7^7 ;
+   v746 : float^2048^7^7 ;
+   v747 : float^2048^7^7 ;
+   v748 : float^512^7^7 ;
+   v749 : float^512^7^7 ;
+   vy_276 : float^512^7^7 ;
+   v750 : float^512^7^7 ;
+   v751 : float^512^7^7 ;
+   v752 : float^512^7^7 ;
+   vy_282 : float^512^7^7 ;
+   v753 : float^512^7^7 ;
+   v754 : float^2048^7^7 ;
+   v755 : float^2048^7^7 ;
+   vy_288 : float^2048^7^7 ;
+   v756 : float^2048^7^7 ;
+   v757 : float^2048^7^7 ;
+   v758 : float^512^7^7 ;
+   v759 : float^512^7^7 ;
+   vy_294 : float^512^7^7 ;
+   v760 : float^512^7^7 ;
+   v761 : float^512^7^7 ;
+   v762 : float^512^7^7 ;
+   vy_300 : float^512^7^7 ;
+   v763 : float^512^7^7 ;
+   v764 : float^2048^7^7 ;
+   v765 : float^2048^7^7 ;
+   vy_306 : float^2048^7^7 ;
+   v766 : float^2048^7^7 ;
+   v767 : float^2048^7^7 ;
+   v768 : float^2048 ;
+   v769 : float^1000 ;
+   v770 : float^1000 ;
+let
+  (*==================================================*)
+  (* Equations start                                  *)
+  (*==================================================*)
+
+  v594 = pad2d<<3,224,224,3,3,3,3>> (data) ;
+  v595 = conv2d_valid<<3,230,230,2,2,7,7,64>>(v594,v278) ;
+  v596 = bias_add<<64,112,112>>(v595,v277) ;
+  vy   = fused_batch_norm_nhwc<<64,112,112>>(v596,v275,v276,v273,v274) ;
+  v597 = relu2d<<64,112,112>>(vy) ;
+  v598 = pad2d<<64,112,112,1,1,1,1>>(v597) ;
+  v599 = max_pool<<64,114,114,2,2,3,3>>(v598) ;
+  v600 = conv2d_valid<<64,56,56,1,1,1,1,256>>(v599,v284) ;
+  v601 = bias_add<<256,56,56>>(v600,v283) ;
+  vy_0 = fused_batch_norm_nhwc<<256,56,56>>(v601,v281,v282,v279,v280) ;
+  v602 = conv2d_valid<<64,56,56,1,1,1,1,64>>(v599,v290) ;
+  v603 = bias_add<<64,56,56>>(v602, v289)  ;
+  vy_6 = fused_batch_norm_nhwc<<64,56,56>>(v603, v287, v288, v285, v286) ;
+  v604 = relu2d<<64,56,56>>(vy_6) ;
+  v605 = conv2d_same_simple<<64,56,56,3,3,64>>(v604, v296) ;
+  v606 = bias_add<<64,56,56>>(v605, v295)  ;
+  vy_12 = fused_batch_norm_nhwc<<64,56,56>>(v606, v293, v294, v291, v292) ;
+  v607 = relu2d<<64,56,56>>(vy_12) ;
+  v608 = conv2d_valid<<64,56,56,1,1,1,1,256>>(v607, v302) ;
+  v609 = bias_add<<256,56,56>>(v608, v301)  ;
+  vy_18 = fused_batch_norm_nhwc<<256,56,56>>(v609, v299, v300, v297, v298) ;
+  v610 = add2d<<256,56,56>>(vy_0, vy_18) ;
+  v611 = relu2d<<256,56,56>>(v610) ;
+  v612 = conv2d_valid<<256,56,56,1,1,1,1,64>>(v611, v308) ;
+  v613 = bias_add<<64,56,56>>(v612, v307) ;
+  vy_24 = fused_batch_norm_nhwc<<64,56,56>>(v613, v305, v306, v303, v304) ;
+  v614 = relu2d<<64,56,56>>(vy_24) ;
+  v615 = conv2d_same_simple<<64,56,56,3,3,64>>(v614, v314) ;
+  v616 = bias_add<<64,56,56>>(v615, v313) ;
+  vy_30 = fused_batch_norm_nhwc<<64,56,56>>(v616, v311, v312, v309, v310) ;
+  v617 = relu2d<<64,56,56>>(vy_30) ;
+  v618 = conv2d_valid<<64,56,56,1,1,1,1,256>>(v617, v320) ;
+  v619 = bias_add<<256,56,56>>(v618, v319) ;
+  vy_36 = fused_batch_norm_nhwc<<256,56,56>>(v619, v317, v318, v315, v316) ;
+  v620 = add2d<<256,56,56>>(v611, vy_36) ;
+  v621 = relu2d<<256,56,56>>(v620) ;
+  v622 = conv2d_valid<<256,56,56,1,1,1,1,64>>(v621, v326) ;
+  v623 = bias_add<<64,56,56>>(v622, v325) ;
+  vy_42 = fused_batch_norm_nhwc<<64,56,56>>(v623, v323, v324, v321, v322) ;
+  v624 = relu2d<<64,56,56>>(vy_42) ;
+  v625 = conv2d_same_simple<<64,56,56,3,3,64>>(v624, v332) ;
+  v626 = bias_add<<64,56,56>>(v625, v331) ;
+  vy_48 = fused_batch_norm_nhwc<<64,56,56>>(v626, v329, v330, v327, v328) ;
+  v627 = relu2d<<64,56,56>>(vy_48) ;
+  v628 = conv2d_valid<<64,56,56,1,1,1,1,256>>(v627, v338) ;
+  v629 = bias_add<<256,56,56>>(v628, v337) ;
+  vy_54 = fused_batch_norm_nhwc<<256,56,56>>(v629, v335, v336, v333, v334) ;
+  v630 = add2d<<256,56,56>>(v621, vy_54) ;
+  v631 = relu2d<<256,56,56>>(v630) ;
+  v632 = conv2d_valid<<256,56,56,2,2,1,1,512>>(v631, v344) ;
+  v633 = bias_add<<512,28,28>>(v632, v343) ;
+  vy_60 = fused_batch_norm_nhwc<<512,28,28>>(v633, v341, v342, v339, v340) ;
+  v634 = conv2d_valid<<256,56,56,2,2,1,1,128>>(v631, v350) ;
+  v635 = bias_add<<128,28,28>>(v634, v349) ;
+  vy_66 = fused_batch_norm_nhwc<<128,28,28>>(v635, v347, v348, v345, v346) ;
+  v636 = relu2d<<128,28,28>>(vy_66) ;
+  v637 = conv2d_same_simple<<128,28,28,3,3,128>>(v636, v356) ;
+  v638 = bias_add<<128,28,28>>(v637, v355) ;
+  vy_72 = fused_batch_norm_nhwc<<128,28,28>>(v638, v353, v354, v351, v352) ;
+  v639 = relu2d<<128,28,28>>(vy_72) ;
+  v640 = conv2d_valid<<128,28,28,1,1,1,1,512>>(v639, v362) ;
+  v641 = bias_add<<512,28,28>>(v640, v361) ;
+  vy_78 = fused_batch_norm_nhwc<<512,28,28>>(v641, v359, v360, v357, v358) ;
+  v642 = add2d<<512,28,28>>(vy_60, vy_78) ;
+  v643 = relu2d<<512,28,28>>(v642) ;
+  v644 = conv2d_valid<<512,28,28,1,1,1,1,128>>(v643, v368) ;
+  v645 = bias_add<<128,28,28>>(v644, v367) ;
+  vy_84 = fused_batch_norm_nhwc<<128,28,28>>(v645, v365, v366, v363, v364) ;
+  v646 = relu2d<<128,28,28>>(vy_84) ;
+  v647 = conv2d_same_simple<<128,28,28,3,3,128>>(v646, v374) ;
+  v648 = bias_add<<128,28,28>>(v647, v373) ;
+  vy_90 = fused_batch_norm_nhwc<<128,28,28>>(v648, v371, v372, v369, v370) ;
+  v649 = relu2d<<128,28,28>>(vy_90) ;
+  v650 = conv2d_valid<<128,28,28,1,1,1,1,512>>(v649, v380) ;
+  v651 = bias_add<<512,28,28>>(v650, v379) ;
+  vy_96 = fused_batch_norm_nhwc<<512,28,28>>(v651, v377, v378, v375, v376) ;
+  v652 = add2d<<512,28,28>>(v643, vy_96) ;
+  v653 = relu2d<<512,28,28>>(v652) ;
+  v654 = conv2d_valid<<512,28,28,1,1,1,1,128>>(v653, v386) ;
+  v655 = bias_add<<128,28,28>>(v654, v385) ;
+  vy_102 = fused_batch_norm_nhwc<<128,28,28>>(v655, v383, v384, v381, v382) ;
+  v656 = relu2d<<128,28,28>>(vy_102) ;
+  v657 = conv2d_same_simple<<128,28,28,3,3,128>>(v656, v392) ;
+  v658 = bias_add<<128,28,28>>(v657, v391) ;
+  vy_108 = fused_batch_norm_nhwc<<128,28,28>>(v658, v389, v390, v387, v388) ;
+  v659 = relu2d<<128,28,28>>(vy_108) ;
+  v660 = conv2d_valid<<128,28,28,1,1,1,1,512>>(v659, v398) ;
+  v661 = bias_add<<512,28,28>>(v660, v397) ;
+  vy_114 = fused_batch_norm_nhwc<<512,28,28>>(v661, v395, v396, v393, v394) ;
+  v662 = add2d<<512,28,28>>(v653, vy_114) ;
+  v663 = relu2d<<512,28,28>>(v662) ;
+  v664 = conv2d_valid<<512,28,28,1,1,1,1,128>>(v663, v404) ;
+  v665 = bias_add<<128,28,28>>(v664, v403) ;
+  vy_120 = fused_batch_norm_nhwc<<128,28,28>>(v665, v401, v402, v399, v400) ;
+  v666 = relu2d<<128,28,28>>(vy_120) ;
+  v667 = conv2d_same_simple<<128,28,28,3,3,128>>(v666, v410) ;
+  v668 = bias_add<<128,28,28>>(v667, v409) ;
+  vy_126 = fused_batch_norm_nhwc<<128,28,28>>(v668, v407, v408, v405, v406) ;
+  v669 = relu2d<<128,28,28>>(vy_126) ;
+  v670 = conv2d_valid<<128,28,28,1,1,1,1,512>>(v669, v416) ;
+  v671 = bias_add<<512,28,28>>(v670, v415) ;
+  vy_132 = fused_batch_norm_nhwc<<512,28,28>>(v671, v413, v414, v411, v412) ;
+  v672 = add2d<<512,28,28>>(v663, vy_132) ;
+  v673 = relu2d<<512,28,28>>(v672) ;
+  v674 = conv2d_valid<<512,28,28,2,2,1,1,1024>>(v673, v422) ;
+  v675 = bias_add<<1024,14,14>>(v674, v421) ;
+  vy_138 = fused_batch_norm_nhwc<<1024,14,14>>(v675, v419, v420, v417, v418) ;
+  v676 = conv2d_valid<<512,28,28,2,2,1,1,256>>(v673, v428) ;
+  v677 = bias_add<<256,14,14>>(v676, v427) ;
+  vy_144 = fused_batch_norm_nhwc<<256,14,14>>(v677, v425, v426, v423, v424) ;
+  v678 = relu2d<<256,14,14>>(vy_144) ;
+  v679 = conv2d_same_simple<<256,14,14,3,3,256>>(v678, v434) ;
+  v680 = bias_add<<256,14,14>>(v679, v433) ;
+  vy_150 = fused_batch_norm_nhwc<<256,14,14>>(v680, v431, v432, v429, v430) ;
+  v681 = relu2d<<256,14,14>>(vy_150) ;
+  v682 = conv2d_valid<<256,14,14,1,1,1,1,1024>>(v681, v440) ;
+  v683 = bias_add<<1024,14,14>>(v682, v439) ;
+  vy_156 = fused_batch_norm_nhwc<<1024,14,14>>(v683, v437, v438, v435, v436) ;
+  v684 = add2d<<1024,14,14>>(vy_138, vy_156) ;
+  v685 = relu2d<<1024,14,14>>(v684) ;
+  v686 = conv2d_valid<<1024,14,14,1,1,1,1,256>>(v685, v446) ;
+  v687 = bias_add<<256,14,14>>(v686, v445) ;
+  vy_162 = fused_batch_norm_nhwc<<256,14,14>>(v687, v443, v444, v441, v442) ;
+  v688 = relu2d<<256,14,14>>(vy_162) ;
+  v689 = conv2d_same_simple<<256,14,14,3,3,256>>(v688, v452) ;
+  v690 = bias_add<<256,14,14>>(v689, v451) ;
+  vy_168 = fused_batch_norm_nhwc<<256,14,14>>(v690, v449, v450, v447, v448) ;
+  v691 = relu2d<<256,14,14>>(vy_168) ;
+  v692 = conv2d_valid<<256,14,14,1,1,1,1,1024>>(v691, v458) ;
+  v693 = bias_add<<1024,14,14>>(v692, v457) ;
+  vy_174 = fused_batch_norm_nhwc<<1024,14,14>>(v693, v455, v456, v453, v454) ;
+  v694 = add2d<<1024,14,14>>(v685, vy_174) ;
+  v695 = relu2d<<1024,14,14>>(v694) ;
+  v696 = conv2d_valid<<1024,14,14,1,1,1,1,256>>(v695, v464) ;
+  v697 = bias_add<<256,14,14>>(v696, v463) ;
+  vy_180 = fused_batch_norm_nhwc<<256,14,14>>(v697, v461, v462, v459, v460) ;
+  v698 = relu2d<<256,14,14>>(vy_180) ;
+  v699 = conv2d_same_simple<<256,14,14,3,3,256>>(v698, v470) ;
+  v700 = bias_add<<256,14,14>>(v699, v469) ;
+  vy_186 = fused_batch_norm_nhwc<<256,14,14>>(v700, v467, v468, v465, v466) ;
+  v701 = relu2d<<256,14,14>>(vy_186) ;
+  v702 = conv2d_valid<<256,14,14,1,1,1,1,1024>>(v701, v476) ;
+  v703 = bias_add<<1024,14,14>>(v702, v475) ;
+  vy_192 = fused_batch_norm_nhwc<<1024,14,14>>(v703, v473, v474, v471, v472) ;
+  v704 = add2d<<1024,14,14>>(v695, vy_192) ;
+  v705 = relu2d<<1024,14,14>>(v704) ;
+  v706 = conv2d_valid<<1024,14,14,1,1,1,1,256>>(v705, v482) ;
+  v707 = bias_add<<256,14,14>>(v706, v481) ;
+  vy_198 = fused_batch_norm_nhwc<<256,14,14>>(v707, v479, v480, v477, v478) ;
+  v708 = relu2d<<256,14,14>>(vy_198) ;
+  v709 = conv2d_same_simple<<256,14,14,3,3,256>>(v708, v488) ;
+  v710 = bias_add<<256,14,14>>(v709, v487) ;
+  vy_204 = fused_batch_norm_nhwc<<256,14,14>>(v710, v485, v486, v483, v484) ;
+  v711 = relu2d<<256,14,14>>(vy_204) ;
+  v712 = conv2d_valid<<256,14,14,1,1,1,1,1024>>(v711, v494) ;
+  v713 = bias_add<<1024,14,14>>(v712, v493) ;
+  vy_210 = fused_batch_norm_nhwc<<1024,14,14>>(v713, v491, v492, v489, v490) ;
+  v714 = add2d<<1024,14,14>>(v705, vy_210) ;
+  v715 = relu2d<<1024,14,14>>(v714) ;
+  v716 = conv2d_valid<<1024,14,14,1,1,1,1,256>>(v715, v500) ;
+  v717 = bias_add<<256,14,14>>(v716, v499) ;
+  vy_216 = fused_batch_norm_nhwc<<256,14,14>>(v717, v497, v498, v495, v496) ;
+  v718 = relu2d<<256,14,14>>(vy_216) ;
+  v719 = conv2d_same_simple<<256,14,14,3,3,256>>(v718, v506) ;
+  v720 = bias_add<<256,14,14>>(v719, v505) ;
+  vy_222 = fused_batch_norm_nhwc<<256,14,14>>(v720, v503, v504, v501, v502) ;
+  v721 = relu2d<<256,14,14>>(vy_222) ;
+  v722 = conv2d_valid<<256,14,14,1,1,1,1,1024>>(v721, v512) ;
+  v723 = bias_add<<1024,14,14>>(v722, v511) ;
+  vy_228 = fused_batch_norm_nhwc<<1024,14,14>>(v723, v509, v510, v507, v508) ;
+  v724 = add2d<<1024,14,14>>(v715, vy_228) ;
+  v725 = relu2d<<1024,14,14>>(v724) ;
+  v726 = conv2d_valid<<1024,14,14,1,1,1,1,256>>(v725, v518) ;
+  v727 = bias_add<<256,14,14>>(v726, v517) ;
+  vy_234 = fused_batch_norm_nhwc<<256,14,14>>(v727, v515, v516, v513, v514) ;
+  v728 = relu2d<<256,14,14>>(vy_234) ;
+  v729 = conv2d_same_simple<<256,14,14,3,3,256>>(v728, v524) ;
+  v730 = bias_add<<256,14,14>>(v729, v523) ;
+  vy_240 = fused_batch_norm_nhwc<<256,14,14>>(v730, v521, v522, v519, v520) ;
+  v731 = relu2d<<256,14,14>>(vy_240) ;
+  v732 = conv2d_valid<<256,14,14,1,1,1,1,1024>>(v731, v530) ;
+  v733 = bias_add<<1024,14,14>>(v732, v529) ;
+  vy_246 = fused_batch_norm_nhwc<<1024,14,14>>(v733, v527, v528, v525, v526) ;
+  v734 = add2d<<1024,14,14>>(v725, vy_246) ;
+  v735 = relu2d<<1024,14,14>>(v734) ;
+  v736 = conv2d_valid<<1024,14,14,2,2,1,1,2048>>(v735, v536) ;
+  v737 = bias_add<<2048,7,7>>(v736, v535) ;
+  vy_252 = fused_batch_norm_nhwc<<2048,7,7>>(v737, v533, v534, v531, v532) ;
+  v738 = conv2d_valid<<1024,14,14,2,2,1,1,512>>(v735, v542) ;
+  v739 = bias_add<<512,7,7>>(v738, v541) ;
+  vy_258 = fused_batch_norm_nhwc<<512,7,7>>(v739, v539, v540, v537, v538) ;
+  v740 = relu2d<<512,7,7>>(vy_258) ;
+  v741 = conv2d_same_simple<<512,7,7,3,3,512>>(v740, v548) ;
+  v742 = bias_add<<512,7,7>>(v741, v547) ;
+  vy_264 = fused_batch_norm_nhwc<<512,7,7>>(v742, v545, v546, v543, v544) ;
+  v743 = relu2d<<512,7,7>>(vy_264) ;
+  v744 = conv2d_valid<<512,7,7,1,1,1,1,2048>>(v743, v554) ;
+  v745 = bias_add<<2048,7,7>>(v744, v553) ;
+  vy_270 = fused_batch_norm_nhwc<<2048,7,7>>(v745, v551, v552, v549, v550) ;
+  v746 = add2d<<2048,7,7>>(vy_252, vy_270) ;
+  v747 = relu2d<<2048,7,7>>(v746) ;
+  v748 = conv2d_valid<<2048,7,7,1,1,1,1,512>>(v747, v560) ;
+  v749 = bias_add<<512,7,7>>(v748, v559) ;
+  vy_276 = fused_batch_norm_nhwc<<512,7,7>>(v749, v557, v558, v555, v556) ;
+  v750 = relu2d<<512,7,7>>(vy_276) ;
+  v751 = conv2d_same_simple<<512,7,7,3,3,512>>(v750, v566) ;
+  v752 = bias_add<<512,7,7>>(v751, v565) ;
+  vy_282 = fused_batch_norm_nhwc<<512,7,7>>(v752, v563, v564, v561, v562) ;
+  v753 = relu2d<<512,7,7>>(vy_282) ;
+  v754 = conv2d_valid<<512,7,7,1,1,1,1,2048>>(v753, v572) ;
+  v755 = bias_add<<2048,7,7>>(v754, v571) ;
+  vy_288 = fused_batch_norm_nhwc<<2048,7,7>>(v755, v569, v570, v567, v568) ;
+  v756 = add2d<<2048,7,7>>(v747, vy_288) ;
+  v757 = relu2d<<2048,7,7>>(v756) ;
+  v758 = conv2d_valid<<2048,7,7,1,1,1,1,512>>(v757, v578) ;
+  v759 = bias_add<<512,7,7>>(v758, v577) ;
+  vy_294 = fused_batch_norm_nhwc<<512,7,7>>(v759, v575, v576, v573, v574) ;
+  v760 = relu2d<<512,7,7>>(vy_294) ;
+  v761 = conv2d_same_simple<<512,7,7,3,3,512>>(v760, v584) ;
+  v762 = bias_add<<512,7,7>>(v761, v583) ;
+  vy_300 = fused_batch_norm_nhwc<<512,7,7>>(v762, v581, v582, v579, v580) ;
+  v763 = relu2d<<512,7,7>>(vy_300) ;
+  v764 = conv2d_valid<<512,7,7,1,1,1,1,2048>>(v763, v590) ;
+  v765 = bias_add<<2048,7,7>>(v764, v589) ;
+  vy_306 = fused_batch_norm_nhwc<<2048,7,7>>(v765, v587, v588, v585, v586) ;
+  v766 = add2d<<2048,7,7>>(v757, vy_306) ;
+  v767 = relu2d<<2048,7,7>>(v766) ;
+  v768 = mean2d<<2048,7,7>>(v767) ;
+  v769 = matmul<<2048,1000>>(v768, v592) ;
+  v770 = add_chans<<1000>>(v769, v591)  ;
+  v771 = softmax<<1000>>(v770)  ;
+
+tel

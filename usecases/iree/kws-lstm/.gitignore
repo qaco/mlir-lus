@@ -1,0 +1,3 @@
+*.o
+*.vmfb
+kws_lstm

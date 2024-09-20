@@ -1,0 +1,4 @@
+(* math sqrt function *)
+fun sqrt (i:float) returns (o:float)
+fun exp (i:float) returns (o:float)
+fun int2float (i:int) returns (o:float)

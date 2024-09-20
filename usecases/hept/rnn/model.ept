@@ -1,0 +1,318 @@
+(* What I understand:
+ * In TF, even in recurrent networks, the first dimension is
+   still the number of batches. The time is the second dimension,
+   and the time iteration goes all the way through it.
+ * This means that data presentation outer dimension is batch,
+   not time. 
+ * To run the code in time, one has to transpose it, and then
+   the second iteration dimension is the batch. :)
+ * To run a RNN over a sliding window in time can probably even be
+   difficult...
+ * Some links:
+    https://stackoverflow.com/questions/44273249/in-keras-what-exactly-am-i-configuring-when-i-create-a-stateful-lstm-layer-wi
+    https://github.com/google/iree/tree/main/iree/test/e2e/models
+ * *)
+
+open Mymath
+
+fun max(a,b:float) returns (o:float)
+let
+  o = if a >=. b then a else b ;
+tel
+
+(* Matmul for 2D Data *)
+
+fun matmul_aux2<<out_dim : int >>
+     (v1:float;m2:float^out_dim;
+      acc:float^out_dim)
+     returns
+     (out:float^out_dim)
+var
+  factor : float^out_dim ;
+let
+  factor = map<<out_dim>> ( *. ) <(v1)> (m2) ;
+  out = map<<out_dim>> ( +. ) (factor,acc) ;
+tel
+
+fun matmul_aux1
+     << in_dim,out_dim:int >>
+     (b:float^out_dim^in_dim;a:float^in_dim)
+     returns
+     (out:float^out_dim)
+let
+  out = fold<<in_dim>> (matmul_aux2<<out_dim>>) (a,b,0.0^out_dim) ;
+tel
+
+fun matmul<<i,j,k:int>>(a:float^k^i;b:float^j^k) returns (c:float^j^i)
+let
+  c = map<<i>> (matmul_aux1<<k,j>>) <(b)> (a);
+tel
+
+(* Add for 2D Data *)
+
+fun add_aux<<k: int>>(a: float^k; b: float^k) returns (c: float^k)
+let
+  c = map<<k>> (+.) (a,b);
+tel
+
+fun add<<i,k:int>>(a:float^k^i;b:float^k^i) returns (c:float^k^i)
+let
+  c = map<<i>> (add_aux<<k>>) (a,b);
+tel
+
+(* Mul for 2D Data *)
+
+fun mul_aux<<k: int>>(a: float^k; b: float^k) returns (c: float^k)
+let
+  c = map<<k>> ( *. ) (a,b);
+tel
+
+fun mul<<i,k:int>>(a:float^k^i;b:float^k^i) returns (c:float^k^i)
+let
+  c = map<<i>> (mul_aux<<k>>) (a,b);
+tel
+
+(* Relu for 2D Data *)
+
+fun relu_aux<<k: int>>(data: float^k) returns(o: float^k)
+let
+  o = map<<k>> max <(0.0)> (data);
+tel
+  
+fun relu<<i,k:int>>(a:float^k^i) returns (c:float^k^i)
+let
+  c = map<<i>> (relu_aux<<k>>) (a);
+tel
+
+(* Sigmoid for 2D Data *)
+
+fun sigmoid_elt(e:float) returns (o:float)
+let
+  o = 1.0 /. (1.0 +. exp(-. e));
+tel
+
+fun sigmoid_aux<<k: int>>(a: float^k) returns (c: float^k)
+let
+  c = map<<k>> sigmoid_elt (a);
+tel
+  
+fun sigmoid<<i,k:int>>(a:float^k^i) returns (c:float^k^i)
+let
+  c = map <<i>> (sigmoid_aux<<k>>) (a);
+tel
+
+(* Add for 2D Data *)
+
+fun bias_add_aux << k: int >> (bias,data: float^k) returns (o: float^k)
+let
+  o = map<<k>> (+.) (data, bias);
+tel
+  
+fun bias_add<<i,k:int>>(data:float^k^i;bias:float^k) returns (o:float^k^i)
+let
+  o = map <<i>> (bias_add_aux<<k>>) <(bias)> (data);
+tel
+
+(* Split for 2D Data *)
+
+fun split_elt<<j,itm:int>>(data:float^(4*j); itj:int) returns (o:float)
+var it: int;
+let
+  it = itm * itj;
+  o = data[> it <];
+tel
+
+fun split_on_m<<j,itm:int>>(data:float^(4*j)) returns (o: float^j)
+let
+  o = mapi << j >> (split_elt<<j,itm>>) <(data)> ();
+tel
+
+fun split4<<i,j:int>>(data:float^(4*j)^i) returns (o0,o1,o2,o3:float^j^i)
+let
+  o0 = map<<i>> (split_on_m<<j,0>>) (data);
+  o1 = map<<i>> (split_on_m<<j,1>>) (data);
+  o2 = map<<i>> (split_on_m<<j,2>>) (data);
+  o3 = map<<i>> (split_on_m<<j,3>>) (data);
+tel
+
+
+node lstn1<<batch_size:int;
+           data_size:int;
+	   lstn_out_size:int>>
+	 (data:float^data_size^batch_size;            (* input *)
+          o76 :float^(4*lstn_out_size)^lstn_out_size; (* constant: weights0 *)
+          o22 :float^(4*lstn_out_size)^data_size;     (* constant: weights1 *)
+	  o78 :float^(4*lstn_out_size);               (* constant: bias1 *)
+	  v24 :float^lstn_out_size^batch_size;
+	  v25 :float^lstn_out_size^batch_size;
+	 ) returns (o2:float^lstn_out_size^batch_size; o3: float^lstn_out_size^batch_size)
+var
+  v26                     : float^(4*lstn_out_size)^batch_size ;
+  v28                     : float^(4*lstn_out_size)^batch_size ;
+  v29                     : float^(4*lstn_out_size)^batch_size ;
+  v30                     : float^(4*lstn_out_size)^batch_size ;
+  v31_0,v31_1,v31_2,v31_3 : float^lstn_out_size^batch_size ;
+  v32,v33,v34,v35,v36     : float^lstn_out_size^batch_size ;
+  v40,v41                 : float^lstn_out_size^batch_size ;
+let
+  v26 = matmul<<batch_size, 4*lstn_out_size, lstn_out_size>>(v24,o76) ;
+  v28 = matmul<<batch_size,4*lstn_out_size, data_size>>(data, o22) ;
+  v29 = add<<batch_size,4*lstn_out_size>>(v28,v26) ;
+  v30 = bias_add<<batch_size,4*lstn_out_size>>(v29, o78) ;
+  (v31_0,v31_1,v31_2,v31_3) = split4<<batch_size,lstn_out_size>>(v30) ;
+  v32 = relu<<batch_size,lstn_out_size>>(v31_2) ;
+  v33 = sigmoid<<batch_size,lstn_out_size>>(v31_0) ;
+  v34 = mul<<batch_size,lstn_out_size>>(v33,v32) ;
+  v35 = sigmoid<<batch_size,lstn_out_size>>(v31_1) ;
+  v36 = mul<<batch_size,lstn_out_size>>(v35, v25) ;
+  o3  = add<<batch_size,lstn_out_size>>(v36,v34) ;
+  v40 = relu<<batch_size,lstn_out_size>>(o3) ;
+  v41 = sigmoid<<batch_size,lstn_out_size>>(v31_3) ;
+  o2  = mul<<batch_size,lstn_out_size>>(v41, v40) ;
+tel
+
+node lstn2<<
+   batch_size:int;
+   data_size:int;
+   lstn1_out_size:int;
+   bias_size: int >>
+( v20: float^lstn1_out_size^batch_size)
+returns (o: float^data_size^batch_size)
+var
+  v0: float^bias_size;
+  v1: float^bias_size^lstn1_out_size;
+  v2: float^bias_size;
+  v3: float^bias_size^bias_size;
+  v4: float^data_size;
+  v5: float^data_size^bias_size;
+  v21: float^bias_size^batch_size;
+  v22: float^bias_size^batch_size;
+  v23: float^bias_size^batch_size;
+  v24: float^bias_size^batch_size;
+  v25: float^bias_size^batch_size;
+  v26: float^bias_size^batch_size;
+  v27: float^data_size^batch_size;
+  v28: float^data_size^batch_size;
+let
+  v0 = 0.0^bias_size ;
+  v1 = 0.0^bias_size^lstn1_out_size ;
+  v2 = 0.0^bias_size;
+  v3 = 0.0^bias_size^bias_size;
+  v4 = 0.0871750935^data_size;
+  v5 = 0.0^data_size^bias_size;
+  v21 = matmul<<batch_size,bias_size,lstn1_out_size>>(v20, v1);
+  v22 = bias_add<<batch_size, bias_size>>(v21,v0);
+  v23 = relu<<batch_size,bias_size>>(v22);
+  v24 = matmul<<batch_size,bias_size, bias_size>>(v23, v3);
+  v25 = bias_add<<batch_size, bias_size>>(v24,v2);
+  v26 = relu<<batch_size,bias_size>>(v25);
+  v27 = matmul<<batch_size,data_size,bias_size>>(v26,v5);
+  v28 = bias_add<<batch_size, data_size>>(v27, v4);
+  o = v28;
+tel
+
+const insize: int = 1
+const lstn1outsize: int = 100
+const lstn2biassize: int = 50
+const batchsize: int = 3
+
+node rnn_example(data:float^1^3) returns ()
+var
+  zero_cst : float^lstn1outsize^batchsize ;
+  o2, o3 : float^lstn1outsize^batchsize ;
+  lstn1_result : float^lstn1outsize^batchsize ;
+  lstn2_result: float^insize^batchsize;
+  time_cnt : int ;
+  lstn_clk : bool ;
+  o76 : float^(4*lstn1outsize)^lstn1outsize ;
+  o22 : float^(4*lstn1outsize)^insize ;
+  o78 : float^(4*lstn1outsize) ;
+  v24                     : float^lstn1outsize^batchsize ;
+  v25                     : float^lstn1outsize^batchsize ;
+let
+
+  zero_cst = 0.0^lstn1outsize^batchsize ;
+  (* This is the time counter that will trigger LSTN output every
+   * 5 samples *)
+  time_cnt = 0 fby ((time_cnt + 1) % 5) ;
+  lstn_clk = time_cnt=4 ;
+  (* Here is the instance of the LSTN node *)
+  o76 = 0.0^(4*lstn1outsize)^lstn1outsize ;
+  o22 = 0.0^(4*lstn1outsize)^insize ;
+  o78 = 0.0^(4*lstn1outsize);
+
+  v24 = zero_cst fby o2;
+  v25 = zero_cst fby o3;
+  (o2, o3) = lstn1<<batchsize,insize,lstn1outsize>>(data, o76, o22, o78, v24, v25) ;
+  lstn1_result = o2 when lstn_clk;
+  lstn2_result = lstn2<<batchsize,insize,lstn1outsize,lstn2biassize>>(lstn1_result);
+
+  (*
+   Still to be code the stuff outside LSTN. And there's a bug in LSTN
+   Here, %20 is lstn_result
+           %1 = "tf.Const"() {value = dense<0.0> : tensor<100x50xf32>} : () -> tensor<100x50xf32>
+	%21 = "tf.MatMul"(%20, %1) {device = "", transpose_a = false, transpose_b = false} : (tensor<?x100xf32>, tensor<100x50xf32>) -> tensor<?x50xf32>
+        %0 = "tf.Const"() {value = dense<0.0> : tensor<50xf32>} : () -> tensor<50xf32>
+        %22 = "tf.BiasAdd"(%21, %0) {data_format = "NHWC", device = ""} : (tensor<?x50xf32>, tensor<50xf32>) -> tensor<?x50xf32>
+        %23 = "tf.Relu"(%22) {device = ""} : (tensor<?x50xf32>) -> tensor<?x50xf32>
+        %3 = "tf.Const"() {value = dense<0.0> : tensor<50x50xf32>} : () -> tensor<50x50xf32>
+        %24 = "tf.MatMul"(%23, %3) {device = "", transpose_a = false, transpose_b = false} : (tensor<?x50xf32>, tensor<50x50xf32>) -> tensor<?x50xf32>
+        %2 = "tf.Const"() {value = dense<0.0> : tensor<50xf32>} : () -> tensor<50xf32>
+        %25 = "tf.BiasAdd"(%24, %2) {data_format = "NHWC", device = ""} : (tensor<?x50xf32>, tensor<50xf32>) -> tensor<?x50xf32>
+        %26 = "tf.Relu"(%25) {device = ""} : (tensor<?x50xf32>) -> tensor<?x50xf32>
+        %5 = "tf.Const"() {value = dense<0.0> : tensor<50x1xf32>} : () -> tensor<50x1xf32>
+        %27 = "tf.MatMul"(%26, %5) {device = "", transpose_a = false, transpose_b = false} : (tensor<?x50xf32>, tensor<50x1xf32>) -> tensor<?x1xf32>
+        %4 = "tf.Const"() {value = dense<0.0871750935> : tensor<1xf32>} : () -> tensor<1xf32>
+        %28 = "tf.BiasAdd"(%27, %4) {data_format = "NHWC", device = ""} : (tensor<?x1xf32>, tensor<1xf32>) -> tensor<?x1xf32>
+
+   *)
+
+tel
+
+
+
+
+(*
+(* The input is a scalar, but to comply with TF's
+ * tensorial representation I use a vector of size 1.
+ * I also set a batch size. *)
+const data_size:int = 1
+const batch_size:int = 3
+const lstn1_out_size:int = 100
+(*
+const o76 : float^(4*lstn1_out_size)^lstn1_out_size = 0.0^(4*lstn1_out_size)^lstn1_out_size
+const o22 : float^(4*lstn1_out_size)^data_size = 0.0^(4*lstn1_out_size)^data_size
+const o78 : float^(4*lstn1_out_size) = 0.0^(4*lstn1_out_size)
+*)
+
+node rnn_example(data:float^data_size^batch_size) returns ()
+var
+  result : float^lstn1_out_size^batch_size ;
+  time_cnt : int ;
+  lstn_clk : bool when time_cnt ;
+  o76 : float^(4*lstn1_out_size)^lstn1_out_size ;
+  o22 : float^(4*lstn1_out_size)^data_size ;
+  o78 : float^(4*lstn1_out_size) ;
+let
+  (* This is the time counter that will trigger LSTN output every
+   * 5 samples *)
+  time_cnt = 0 fby ((time_cnt + 1) % 5) ;
+  lstn_clk = time_cnt=4 ;
+  (* Here is the instance of the LSTN node *)
+  o76 = 0.0^400^100 ;
+  o22 = 0.0^400^1 ;
+  o78 = 0.0^400 ;
+
+  result = lstn<<3,1,100>>
+	       (data,
+	       lstn_clk,
+	       o76,
+	       o22,
+	       o78) ;
+(*
+  result = lstn<<batch_size,data_size,lstn_out_size>>
+	       (data,(time_cnt=4),o76,o22,o78) ;
+	       *)
+  (* result = 0.0^lstn_out_size^batch_size ; *)
+tel
+*)

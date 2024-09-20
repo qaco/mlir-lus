@@ -1,0 +1,9 @@
+open Resnet
+
+fun main() returns ()
+var inp: float^3^224^224;
+    r: float^1000;
+let
+  inp = 0.0^3^224^224;
+  r = resnet50(inp);
+tel

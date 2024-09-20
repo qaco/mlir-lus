@@ -1,0 +1,8 @@
+resnet_part_c
+resnet_c
+comp
+*.log
+*.mls
+*.epci
+*.o
+resnet
