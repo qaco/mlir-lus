@@ -49,12 +49,14 @@ $(APPNAME_SEQ): $(ALLMLIR_SEQ:.mlir=.mlir.o) $(CFILES_SEQ:.c=.c.o)
 		--convert-complex-to-standard --arith-expand --std-expand \
 		--tensor-constant-bufferize --scf-bufferize --std-bufferize \
 		--arith-bufferize --tensor-bufferize --linalg-bufferize \
-		--canonicalize --buffer-deallocation | \
+		--canonicalize | \
 	$(MLIRPRIME) --remove-simple-linalg-copy --remove-simple-memref-copy -o=$@
 
 %.lus.tf.mlir: %.lus.mlir
 	@echo "Compiling $< to $@"
-	@$(MLIRLUS) $< --normalize --to-sync-automata --sync-to-std -o=$@
+	$(MLIRLUS) $< --all-fbys-on-base-clock --fbys-centralization \
+		--explicit-signals --recompute-order --explicit-clocks \
+		--scf-clocks --node-to-reactive-func --sync-to-std -o $@
 
 %.tf.tensor.mlir : %.tf.mlir
 	@echo "Compiling $< to $@"

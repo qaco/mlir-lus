@@ -1,7 +1,6 @@
 // mlirlus ok-lstm.mlir --all-fbys-on-base-clock --fbys-centralization --explicit-signals --recompute-order --explicit-clocks --scf-clocks --node-to-reactive-func --sync-to-std
 
-  lus.node_test @model(%arg0:tensor<1x40xf32>) -> (tensor<1x4xf32>) {
-    %dump = "tf.Const"() {value = dense<0.0> : tensor<1x4xf32>} : () -> tensor<1x4xf32>
+  lus.node @model(%arg0:tensor<1x40xf32>) -> (tensor<1x4xf32>) {
     // Period of the recurrence
     %0 = "tf.Const"() {value = dense<0> : tensor<i32>} : () -> tensor<i32>
     %1 = lus.fby %0 %3:tensor<i32>
@@ -12,15 +11,13 @@
     %6 = "tf.LessEqual"(%5, %4) : (tensor<i32>, tensor<i32>) -> tensor<i1>
     %period = tensor.extract %6[] : tensor<i1>
     // LSTM
-    %LSTM_out = lus.instance_test @lstm(%arg0,%period): (tensor<1x40xf32>,i1) -> (tensor<1x4xf32>)
+    %LSTM_out = lus.instance @lstm(%arg0,%period): (tensor<1x40xf32>,i1) -> (tensor<1x4xf32>)
     // Dense
-    %dense_out = lus.instance_test @dense0(%LSTM_out): (tensor<1x4xf32>) -> (tensor<1x4xf32>)
-    // Output
-    %output = lus.merge %period %dense_out %dump: tensor<1x4xf32>
-    lus.yield(%output: tensor<1x4xf32>)
+    %dense_out = lus.instance @dense0(%LSTM_out): (tensor<1x4xf32>) -> (tensor<1x4xf32>)
+    lus.yield(%dense_out: tensor<1x4xf32>)
   }
 
-  lus.node_test @lstm(%sample:tensor<1x40xf32>,%rst: i1) -> (%o: tensor<1x4xf32>)
+  lus.node @lstm(%sample:tensor<1x40xf32>,%rst: i1) -> (%o: tensor<1x4xf32>)
     clock { lus.on_clock_node ((base,base) -> (base on %rst)) }{
     // Weights initializations
     %rec_kern = "tf.Const"() {value = dense<2.0> : tensor<4x16xf32>} : () -> tensor<4x16xf32>
@@ -61,7 +58,7 @@
     lus.yield  (%output:tensor<1x4xf32>)
   }
 
-  lus.node_test @dense0(%arg0: tensor<1x4xf32>) -> (tensor<1x4xf32>) {
+  lus.node @dense0(%arg0: tensor<1x4xf32>) -> (tensor<1x4xf32>) {
     %63 = "tf.Const"() {value = dense<2.0> : tensor<4x4xf32>} : () -> tensor<4x4xf32>
     %64 = "tf.MatMul"(%arg0, %63) : (tensor<1x4xf32>, tensor<4x4xf32>) -> tensor<1x4xf32>
     %65 = "tf.Const"() {value = dense<3.0> : tensor<4xf32>} : () -> tensor<4xf32>

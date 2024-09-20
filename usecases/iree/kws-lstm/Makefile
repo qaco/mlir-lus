@@ -157,7 +157,11 @@ kws_lstm-vulkan.vm.mlir: kws_lstm.mhlo.mlir
 
 kws_lstm.mhlo.mlir: kws_lstm.py
 	$(PY) $< | \
-	$(MLIRLUS) --normalize --invert-control --sync-to-std | \
+	$(MLIRLUS) --inline-instances \
+		--all-fbys-on-base-clock --fbys-centralization \
+		--recompute-order \
+		--explicit-clocks --scf-clocks \
+		--node-to-step-func --sync-to-std | \
 	$(TF_OPT) --tf-standard-pipeline \
 		--xla-legalize-tf=allow-partial-conversion > $@
 

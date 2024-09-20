@@ -54,7 +54,9 @@ $(APPNAME): $(ALLMLIR:.mlir=.mlir.o) $(CFILES:.c=.c.o)
 
 %.tf.mlir : %.lus.mlir
 	@echo "Compiling $< to $@"
-	$(MLIRLUS) $< --normalize --to-sync-automata --sync-to-std -o $@
+	$(MLIRLUS) $< --all-fbys-on-base-clock --fbys-centralization \
+	--explicit-signals --recompute-order --explicit-clocks \
+	--scf-clocks --node-to-reactive-func --sync-to-std -o $@
 
 
 

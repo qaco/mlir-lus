@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # mlir/lus to llvmir
-mlirlus lstm.lus.mlir --normalize --to-sync-automata --sync-to-std | \
+/Users/dpotop/github/mlir-rt/mlir-lus/mlirlus lstm.lus.mlir --normalize --to-sync-automata --sync-to-std | \
     tf-opt --xla-legalize-tf=allow-partial-conversion \
 	   --hlo-legalize-to-linalg --canonicalize | \
     mlir-opt --linalg-bufferize \

@@ -101,31 +101,31 @@ SPECIFIC_LIBS= \
 	$(IREE_BUILD_DIR)/iree/hal/vulkan/util/libiree_hal_vulkan_util_arena.a \
 	$(IREE_BUILD_DIR)/iree/hal/vulkan/builtin/libiree_hal_vulkan_builtin_builtin.a \
 
-.PRECIOUS: kws_lstm.mhlo.mlir
+.PRECIOUS: timeseries.mhlo.mlir
 
 all: dylib cuda vulkan vmvx
 
 run-vmvx: vmvx
-	./kws_lstm kws_lstm-vmvx.vmfb vmvx
+	./timeseries timeseries-vmvx.vmfb vmvx
 
 run-dylib: dylib
-	./kws_lstm kws_lstm-dylib.vmfb dylib
+	./timeseries timeseries-dylib.vmfb dylib
 
 run-cuda: cuda
-	./kws_lstm kws_lstm-cuda.vmfb cuda
+	./timeseries timeseries-cuda.vmfb cuda
 
 run-vulkan: vulkan
-	./kws_lstm kws_lstm-vulkan.vmfb vulkan
+	./timeseries timeseries-vulkan.vmfb vulkan
 
-vmvx: kws_lstm kws_lstm-vmvx.vmfb
+vmvx: timeseries timeseries-vmvx.vmfb
 
-dylib: kws_lstm kws_lstm-dylib.vmfb
+dylib: timeseries timeseries-dylib.vmfb
 
-cuda: kws_lstm kws_lstm-cuda.vmfb
+cuda: timeseries timeseries-cuda.vmfb
 
-vulkan: kws_lstm kws_lstm-vulkan.vmfb
+vulkan: timeseries timeseries-vulkan.vmfb
 
-kws_lstm: main.c.o tick.c.o
+timeseries: main.c.o tick.c.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) $(SPECIFIC_LIBS) $(LIBS) -o $@
 
 main.c.o: main.c
@@ -134,28 +134,28 @@ main.c.o: main.c
 tick.c.o: tick.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
-kws_lstm-dylib.vm.mlir: kws_lstm.mhlo.mlir
+timeseries-dylib.vm.mlir: timeseries.mhlo.mlir
 	$(IREE_OPT) $< \
 		--iree-hal-target-backends=dylib-llvm-aot \
 		--iree-mhlo-to-mhlo-preprocessing \
 		--iree-mhlo-input-transformation-pipeline \
 		--iree-transformation-pipeline -o $@
 
-kws_lstm-vmvx.vm.mlir: kws_lstm.mhlo.mlir
+timeseries-vmvx.vm.mlir: timeseries.mhlo.mlir
 	$(IREE_OPT) $< \
 		--iree-hal-target-backends=vmvx \
 		--iree-mhlo-to-mhlo-preprocessing \
 		--iree-mhlo-input-transformation-pipeline \
 		--iree-transformation-pipeline -o $@
 
-kws_lstm-cuda.vm.mlir: kws_lstm.mhlo.mlir
+timeseries-cuda.vm.mlir: timeseries.mhlo.mlir
 	$(IREE_OPT) $< \
 		--iree-hal-target-backends=cuda \
 		--iree-mhlo-to-mhlo-preprocessing \
 		--iree-mhlo-input-transformation-pipeline \
 		--iree-transformation-pipeline -o $@
 
-kws_lstm-vulkan.vm.mlir: kws_lstm.mhlo.mlir
+timeseries-vulkan.vm.mlir: timeseries.mhlo.mlir
 	$(IREE_OPT) $< \
 		--iree-hal-target-backends=vulkan \
 		--iree-mhlo-to-mhlo-preprocessing \
@@ -167,9 +167,13 @@ kws_lstm-vulkan.vm.mlir: kws_lstm.mhlo.mlir
 		-iree-vm-ir-to-bytecode-module \
 		--iree-vm-bytecode-module-optimize -o $@
 
-kws_lstm.mhlo.mlir: kws_lstm.py
+timeseries.mhlo.mlir: timeseries.py
 	$(PY) $< | \
-	$(MLIRLUS) --normalize --invert-control --sync-to-std | \
+	$(MLIRLUS) --inline-instances \
+		--all-fbys-on-base-clock --fbys-centralization \
+		--recompute-order \
+		--explicit-clocks --scf-clocks \
+		--node-to-step-func --sync-to-std | \
 	$(TF_OPT) --tf-standard-pipeline \
 		--xla-legalize-tf=allow-partial-conversion > $@
 
@@ -179,4 +183,4 @@ clean:
 	rm -rf *.vmfb
 	rm -rf *.vm.mlir
 	rm -rf *.mhlo.mlir
-	rm -rf kws_lstm
+	rm -rf timeseries

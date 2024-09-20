@@ -178,7 +178,11 @@ resnet50-vulkan.vm.mlir: resnet50.mhlo.mlir
 
 resnet50.mhlo.mlir: resnet50.py resnet50.h5
 	$(PY) $< | \
-	$(MLIRLUS) --normalize --invert-control --sync-to-std | \
+	$(MLIRLUS) --inline-instances \
+		--all-fbys-on-base-clock --fbys-centralization \
+		--recompute-order \
+		--explicit-clocks --scf-clocks \
+		--node-to-step-func --sync-to-std | \
 	$(TF_OPT) --tf-standard-pipeline \
 		--xla-legalize-tf=allow-partial-conversion > $@
 
